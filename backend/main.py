@@ -263,6 +263,24 @@ def slot_key(dt_str: str) -> Optional[str]:
         return parsed.strftime("%d.%m, %H:%M")
     return dt_str.strip() if dt_str else None
 
+def find_master_service(db: Session, master_id: int, service_id: Optional[int], service_name: str) -> Optional[Service]:
+    """Ищет АКТИВНУЮ услугу мастера: сначала по id, затем по точному названию,
+    затем по частичному совпадению («педикюр» → «Педикюр с покрытием»)."""
+    active = db.query(Service).filter(Service.master_id == master_id, Service.is_active == True).all()
+    if service_id:
+        by_id = next((s for s in active if s.id == service_id), None)
+        if by_id:
+            return by_id
+    name = (service_name or "").strip().lower()
+    if not name:
+        return None
+    exact = next((s for s in active if s.name.strip().lower() == name), None)
+    if exact:
+        return exact
+    partial = [s for s in active if name in s.name.lower() or s.name.lower() in name]
+    return partial[0] if len(partial) >= 1 else None
+
+
 def _build_booking_response(booking: Booking) -> BookingResponse:
     """Вспомогательная функция формирования BookingResponse с данными клиента"""
     client_name = booking.client.name if booking.client else "Клиент"
@@ -294,8 +312,17 @@ def health_check():
     return {
         "status": "ok",
         "service": "MasterBoss Backend API",
-        "version": "1.1.0"
+        "version": "1.1.0",
+        "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "timezone": time.strftime("%Z"),
     }
+
+
+@app.get("/api/health/ai", tags=["Health"])
+def health_check_ai(probe: bool = Query(True, description="Сделать тестовый запрос в GigaChat")):
+    """Проверка GigaChat: задан ли ключ, отвечает ли модель и какая последняя ошибка.
+    Откройте в браузере: https://<ваш-домен>/api/health/ai"""
+    return ai_parser.ai_status(probe=probe)
 
 
 @app.get("/", tags=["Health"])
@@ -946,10 +973,17 @@ def parse_expense_with_ai(payload: AIExpenseRequest):
     и возвращает извлеченную сумму и категорию расхода.
     """
     parsed = ai_parser.parse_expense_phrase(payload.phrase)
+    if parsed["amount"] <= 0:
+        # Раньше здесь молча подставлялось 1000 ₽ — теперь честно просим уточнить
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Не нашёл сумму во фразе. Напишите её цифрами, например: «базы и топы 3200»"
+        )
     return AIExpenseResponse(
         amount=parsed["amount"],
         category=parsed["category"],
-        raw_phrase=payload.phrase
+        raw_phrase=payload.phrase,
+        source=parsed["source"]
     )
 
 
@@ -966,18 +1000,25 @@ def generate_reminder_with_ai(payload: AIReminderRequest, db: Session = Depends(
     """
     client = db.query(Client).filter(Client.id == payload.client_id).first()
     phone = client.phone if client else None
+    master = client.master if client else None
+    master_slug = master.slug if master else "anna"
+    # PUBLIC_URL (например https://masterboss.onrender.com) делает ссылку кликабельной в мессенджере
+    booking_url = f"{os.getenv('PUBLIC_URL', '').rstrip('/')}/c/{master_slug}"
 
-    msg = ai_parser.generate_client_reminder(
+    result = ai_parser.generate_client_reminder(
         client_name=payload.client_name,
         days_ago=payload.days_ago,
         cycle_days=payload.cycle_days,
-        service_name=payload.service_name or "маникюр"
+        service_name=payload.service_name or "маникюр",
+        master_name=master.name if master else "Анна Nails",
+        booking_url=booking_url
     )
 
     return AIReminderResponse(
-        message=msg,
+        message=result["message"],
         client_name=payload.client_name,
-        phone=phone
+        phone=phone,
+        source=result["source"]
     )
 
 
@@ -1033,13 +1074,13 @@ def handle_chat_message(payload: ChatMessageRequest, db: Session = Depends(get_d
             detail="Укажите ваше имя"
         )
 
-    # Извлечение параметров услуги, времени и цены
+    # Извлечение параметров услуги и времени.
+    # ЦЕНА от браузера ИГНОРИРУЕТСЯ: её берём только из прайса мастера (таблица Service).
     service_name = (payload.service_name or "").strip()
     datetime_str = (payload.datetime_str or "").strip()
-    price = payload.price
 
-    # Fallback на ai_parser, если параметры переданы текстом
-    if (not service_name or not datetime_str or price is None) and payload.message and payload.message.strip():
+    # Fallback на ai_parser, если услуга или время пришли свободным текстом
+    if ((not payload.service_id and not service_name) or not datetime_str) and payload.message and payload.message.strip():
         parsed_data = ai_parser.parse_booking_message(
             text=payload.message,
             client_name=name,
@@ -1047,27 +1088,21 @@ def handle_chat_message(payload: ChatMessageRequest, db: Session = Depends(get_d
         )
         service_name = service_name or (parsed_data.get("service_name") or "").strip()
         datetime_str = datetime_str or (parsed_data.get("datetime_str") or "").strip()
-        if price is None and parsed_data.get("price") is not None:
-            try:
-                price = float(parsed_data["price"])
-            except (ValueError, TypeError):
-                price = None
 
-    if not service_name:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Не указана услуга"
-        )
     if not datetime_str:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Не выбрана дата и время записи"
         )
-    if price is None:
+
+    service = find_master_service(db, master.id, payload.service_id, service_name)
+    if not service:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Не указана стоимость услуги"
+            detail="Услуга не найдена в прайсе мастера. Выберите услугу из списка"
         )
+    service_name = service.name
+    price = service.price
 
     scheduled_at = parse_datetime_str(datetime_str)
     if scheduled_at:
@@ -1665,7 +1700,7 @@ def send_care_card(booking_id: int, db: Session = Depends(get_db)):
     result = ai_parser.generate_post_care_card(service_name=service_name, client_name=client_name)
     card_text = result.get("care_card_text", "")
 
-    return CareCardResponse(success=True, card_text=card_text)
+    return CareCardResponse(success=True, card_text=card_text, source=result.get("source", "template"))
 
 
 # =====================================================================

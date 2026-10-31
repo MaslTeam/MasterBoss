@@ -181,6 +181,7 @@ export default function MasterApp() {
   // GIGACHAT AI: БИЗНЕС-АУДИТ
   // -------------------------------------------------------------------
   const [businessAudit, setBusinessAudit] = useState(null)
+  const [businessAuditSource, setBusinessAuditSource] = useState(null)
   const [auditLoading, setAuditLoading] = useState(false)
 
   // -------------------------------------------------------------------
@@ -390,6 +391,7 @@ export default function MasterApp() {
       if (!res.ok) throw new Error('Сервер вернул ошибку ' + res.status)
       const data = await res.json()
       setBusinessAudit(data.audit_text)
+      setBusinessAuditSource(data.source || 'template')
       showToast('AI-аудит готов ✨', 'success')
     } catch (err) {
       showToast('Не удалось запустить аудит: ' + err.message, 'error')
@@ -829,7 +831,10 @@ export default function MasterApp() {
         body: JSON.stringify({ phrase: aiExpensePhrase.trim() })
       })
 
-      if (!parseRes.ok) throw new Error('Сбой распознавания фразы нейросетью')
+      if (!parseRes.ok) {
+        const errData = await parseRes.json().catch(() => ({}))
+        throw new Error(errData.detail || 'Сбой распознавания фразы')
+      }
       const parsed = await parseRes.json()
 
       // 2. Создаем транзакцию
@@ -848,7 +853,8 @@ export default function MasterApp() {
       setAiExpensePhrase('')
       await fetchStats(true)
       showToast(
-        `Расход ${parsed.amount.toLocaleString('ru-RU')} ₽ («${parsed.category}») внесен через GigaChat! 🤖✨`,
+        `Расход ${parsed.amount.toLocaleString('ru-RU')} ₽ («${parsed.category}») внесён` +
+          (parsed.source === 'gigachat' ? ' через GigaChat 🤖' : ' (распознан без ИИ)'),
         'success'
       )
     } catch (err) {
@@ -1895,7 +1901,12 @@ export default function MasterApp() {
                 <h2 className="text-sm sm:text-base font-bold mb-1">✨ AI-Анализ финансов от GigaChat</h2>
                 <p className="text-xs text-indigo-100/90 mb-3 leading-relaxed max-w-lg">
                   {businessAudit ? (
-                    <span dangerouslySetInnerHTML={{ __html: businessAudit.replace(/\n/g, '<br>') }} />
+                    <span style={{ whiteSpace: 'pre-line' }}>
+                      {businessAudit}
+                      {businessAuditSource === 'template' && (
+                        <span className="block mt-2 text-[11px] opacity-70">Шаблон: GigaChat сейчас недоступен</span>
+                      )}
+                    </span>
                   ) : (
                     'Нажмите кнопку выше, чтобы получить анализ финансов и рекомендации по росту чека.'
                   )}
