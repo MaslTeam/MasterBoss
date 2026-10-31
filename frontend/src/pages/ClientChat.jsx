@@ -611,9 +611,9 @@ export default function ClientChat() {
         slug,
         client_name: clientName.trim(),
         client_phone: clientPhone.trim(),
-        service_name: selectedService?.name || 'Маникюр с покрытием',
+        service_id: selectedService?.id,
+        service_name: selectedService?.name,
         datetime_str: selectedDateTime.trim(),
-        price: selectedService?.price || 2500,
         message: 'Запись через пошаговый выбор'
       }
 
