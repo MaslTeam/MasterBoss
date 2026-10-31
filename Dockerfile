@@ -25,9 +25,14 @@ FROM python:3.11-slim AS runner
 WORKDIR /app
 
 # Установка системных зависимостей для сборки cryptography
+# tzdata нужен, чтобы datetime.now() работал по московскому времени
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
+
+# Московский часовой пояс для всего контейнера (слоты, напоминания, правило отмены за 24 ч)
+ENV TZ=Europe/Moscow
 
 # Установка Python-библиотек
 COPY backend/requirements.txt ./
