@@ -80,6 +80,8 @@ class BookingResponse(BaseModel):
     price: float
     datetime_str: str
     status: str
+    scheduled_at: Optional[datetime] = None
+    can_mark_visit: bool = Field(default=False, description="Время визита наступило — можно отметить «Пришла / Не пришла»")
 
 
 class BookingStatusResponse(BaseModel):
@@ -96,6 +98,13 @@ class TransactionCreate(BaseModel):
     type: Literal["income", "expense"] = Field(..., description="Тип операции: income (доход) или expense (расход)")
     amount: float = Field(..., gt=0, description="Сумма в рублях")
     category: str = Field(..., min_length=1, max_length=100, description="Категория операции")
+    source: Optional[Literal["manual", "ai"]] = Field(default="manual", description="Как внесена: вручную или через ИИ")
+
+
+class TransactionUpdate(BaseModel):
+    """Схема редактирования финансовой операции"""
+    amount: Optional[float] = Field(default=None, gt=0, description="Новая сумма в рублях")
+    category: Optional[str] = Field(default=None, min_length=1, max_length=100, description="Новая категория")
 
 
 class TransactionResponse(BaseModel):
@@ -107,6 +116,8 @@ class TransactionResponse(BaseModel):
     amount: float
     category: str
     date: datetime
+    source: Optional[str] = None
+    booking_id: Optional[int] = None
 
 
 
@@ -152,6 +163,7 @@ class AIExpenseResponse(BaseModel):
     amount: float
     category: str
     raw_phrase: str
+    source: Literal["gigachat", "template"] = Field(default="template", description="Кто сгенерировал текст: нейросеть или запасной шаблон")
 
 
 class AIReminderRequest(BaseModel):
@@ -168,6 +180,7 @@ class AIReminderResponse(BaseModel):
     message: str
     client_name: str
     phone: Optional[str] = None
+    source: Literal["gigachat", "template"] = Field(default="template", description="Кто сгенерировал текст: нейросеть или запасной шаблон")
 
 
 class ChatMessageRequest(BaseModel):
@@ -178,7 +191,8 @@ class ChatMessageRequest(BaseModel):
     client_phone: Optional[str] = Field(default=None, description="Телефон клиента")
     service_name: Optional[str] = Field(default=None, description="Название выбранной услуги")
     datetime_str: Optional[str] = Field(default=None, description="Выбранная дата и время")
-    price: Optional[float] = Field(default=None, description="Стоимость услуги")
+    service_id: Optional[int] = Field(default=None, description="ID услуги из прайса мастера (предпочтительно)")
+    price: Optional[float] = Field(default=None, description="Устарело: игнорируется, цена берётся из прайса мастера")
 
 
 class ChatMessageResponse(BaseModel):
@@ -252,6 +266,7 @@ class WaitlistSubscriptionResponse(BaseModel):
 class BusinessAuditResponse(BaseModel):
     """Ответ с текстом бизнес-аудита от GigaChat"""
     audit_text: str
+    source: Literal["gigachat", "template"] = Field(default="template", description="Кто сгенерировал текст: нейросеть или запасной шаблон")
 
 
 class ConflictResolverRequest(BaseModel):
@@ -265,12 +280,14 @@ class ConflictResolverRequest(BaseModel):
 class ConflictResolverResponse(BaseModel):
     """Ответ с текстом ответа клиенту"""
     reply_text: str
+    source: Literal["gigachat", "template"] = Field(default="template", description="Кто сгенерировал текст: нейросеть или запасной шаблон")
 
 
 class CareCardResponse(BaseModel):
     """Ответ с текстом памятки по уходу"""
     success: bool
     card_text: str
+    source: Literal["gigachat", "template"] = Field(default="template", description="Кто сгенерировал текст: нейросеть или запасной шаблон")
 
 
 

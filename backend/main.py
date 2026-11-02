@@ -29,6 +29,7 @@ from schemas import (
     BookingResponse,
     BookingStatusResponse,
     TransactionCreate,
+    TransactionUpdate,
     TransactionResponse,
     StatsResponse,
     ChatMessageRequest,
@@ -61,6 +62,27 @@ import ai_parser
 
 # Автоматическое создание таблиц, если они еще не существуют
 Base.metadata.create_all(bind=engine)
+
+
+def _ensure_sqlite_columns():
+    """create_all() не добавляет новые колонки в уже существующие таблицы.
+    Добавляем их вручную, чтобы старая база (локальная или на диске сервера) не падала."""
+    from sqlalchemy import inspect, text
+    required = {
+        "bookings": {"visited_at": "DATETIME"},
+        "transactions": {"source": "VARCHAR(20)", "booking_id": "INTEGER"},
+    }
+    inspector = inspect(engine)
+    with engine.begin() as conn:
+        for table, columns in required.items():
+            existing = {c["name"] for c in inspector.get_columns(table)}
+            for name, ddl_type in columns.items():
+                if name not in existing:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl_type}"))
+                    print(f"[DB migrate] {table}.{name} добавлена", flush=True)
+
+
+_ensure_sqlite_columns()
 
 
 def _init_default_data():
@@ -263,10 +285,49 @@ def slot_key(dt_str: str) -> Optional[str]:
         return parsed.strftime("%d.%m, %H:%M")
     return dt_str.strip() if dt_str else None
 
+def booking_visit_time(booking: Booking) -> Optional[datetime]:
+    """Время визита: scheduled_at, а если его нет — разбор строки.
+    parse_datetime_str переносит прошедшие даты на следующий год (это нужно для новых заявок),
+    поэтому для уже прошедших визитов возвращаем год назад."""
+    if booking.scheduled_at:
+        return booking.scheduled_at
+    parsed = parse_datetime_str(booking.datetime_str)
+    if parsed and parsed - datetime.now() > timedelta(days=180):
+        try:
+            parsed = parsed.replace(year=parsed.year - 1)
+        except ValueError:
+            pass
+    return parsed
+
+
+def find_master_service(db: Session, master_id: int, service_id: Optional[int], service_name: str) -> Optional[Service]:
+    """Ищет АКТИВНУЮ услугу мастера: сначала по id, затем по точному названию,
+    затем по частичному совпадению («педикюр» → «Педикюр с покрытием»)."""
+    active = db.query(Service).filter(Service.master_id == master_id, Service.is_active == True).all()
+    if service_id:
+        by_id = next((s for s in active if s.id == service_id), None)
+        if by_id:
+            return by_id
+    name = (service_name or "").strip().lower()
+    if not name:
+        return None
+    exact = next((s for s in active if s.name.strip().lower() == name), None)
+    if exact:
+        return exact
+    partial = [s for s in active if name in s.name.lower() or s.name.lower() in name]
+    return partial[0] if len(partial) >= 1 else None
+
+
 def _build_booking_response(booking: Booking) -> BookingResponse:
     """Вспомогательная функция формирования BookingResponse с данными клиента"""
     client_name = booking.client.name if booking.client else "Клиент"
     client_phone = booking.client.phone if booking.client else ""
+    visit_at = booking_visit_time(booking)
+    can_mark_visit = bool(
+        visit_at
+        and visit_at <= datetime.now()
+        and booking.status in ("confirmed", "completed", "no_show")
+    )
     return BookingResponse(
         id=booking.id,
         client_name=client_name,
@@ -274,7 +335,9 @@ def _build_booking_response(booking: Booking) -> BookingResponse:
         service_name=booking.service_name,
         price=booking.price,
         datetime_str=booking.datetime_str,
-        status=booking.status
+        status=booking.status,
+        scheduled_at=visit_at,
+        can_mark_visit=can_mark_visit
     )
 
 
@@ -294,8 +357,17 @@ def health_check():
     return {
         "status": "ok",
         "service": "MasterBoss Backend API",
-        "version": "1.1.0"
+        "version": "1.1.0",
+        "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "timezone": time.strftime("%Z"),
     }
+
+
+@app.get("/api/health/ai", tags=["Health"])
+def health_check_ai(probe: bool = Query(True, description="Сделать тестовый запрос в GigaChat")):
+    """Проверка GigaChat: задан ли ключ, отвечает ли модель и какая последняя ошибка.
+    Откройте в браузере: https://<ваш-домен>/api/health/ai"""
+    return ai_parser.ai_status(probe=probe)
 
 
 @app.get("/", tags=["Health"])
@@ -877,13 +949,142 @@ def create_transaction(
         type=transaction_in.type,
         amount=transaction_in.amount,
         category=transaction_in.category,
-        date=datetime.now()
+        date=datetime.now(),
+        source=transaction_in.source or "manual"
     )
     db.add(new_tx)
     db.commit()
     db.refresh(new_tx)
 
     return TransactionResponse.model_validate(new_tx)
+
+
+def _get_master_or_404(db: Session, slug: str) -> Master:
+    master = db.query(Master).filter(Master.slug == slug).first()
+    if not master:
+        raise HTTPException(status_code=404, detail=f"Мастер со слагом '{slug}' не найден")
+    return master
+
+
+def _get_master_booking_or_404(db: Session, master: Master, booking_id: int) -> Booking:
+    booking = db.query(Booking).filter(Booking.id == booking_id, Booking.master_id == master.id).first()
+    if not booking:
+        raise HTTPException(status_code=404, detail=f"Запись с ID {booking_id} не найдена")
+    return booking
+
+
+def _check_visit_time(booking: Booking):
+    """«Пришла / Не пришла» можно нажать только когда время визита уже наступило."""
+    if booking.status not in ("confirmed", "completed", "no_show"):
+        raise HTTPException(status_code=400, detail="Отметить визит можно только у подтверждённой записи")
+    visit_at = booking_visit_time(booking)
+    if not visit_at:
+        raise HTTPException(status_code=400, detail="Не удалось определить время визита")
+    if visit_at > datetime.now():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Визит ещё не начался ({visit_at.strftime('%d.%m %H:%M')}). Отметить можно после этого времени"
+        )
+    return visit_at
+
+
+@app.post(
+    "/api/app/booking/{booking_id}/visited",
+    response_model=BookingResponse,
+    tags=["Bookings"],
+    summary="Клиент пришёл: статус completed + автоматический доход"
+)
+def mark_booking_visited(booking_id: int, slug: str = Query("anna"), db: Session = Depends(get_db)):
+    """Переводит запись в 'completed', ставит клиенту дату визита и создаёт доход
+    по цене записи. Повторное нажатие не создаёт второй доход."""
+    master = _get_master_or_404(db, slug)
+    booking = _get_master_booking_or_404(db, master, booking_id)
+    visit_at = _check_visit_time(booking)
+
+    booking.status = "completed"
+    booking.visited_at = datetime.now()
+
+    if booking.client:
+        if not booking.client.last_visit_date or booking.client.last_visit_date < visit_at:
+            booking.client.last_visit_date = visit_at
+
+    income = db.query(Transaction).filter(Transaction.booking_id == booking.id).first()
+    if not income:
+        db.add(Transaction(
+            master_id=master.id,
+            type="income",
+            amount=booking.price,
+            category=f"Услуга: {booking.service_name}",
+            date=visit_at,
+            source="booking",
+            booking_id=booking.id,
+        ))
+
+    db.commit()
+    db.refresh(booking)
+    return _build_booking_response(booking)
+
+
+@app.post(
+    "/api/app/booking/{booking_id}/no-show",
+    response_model=BookingResponse,
+    tags=["Bookings"],
+    summary="Клиент не пришёл: статус no_show, доход по визиту удаляется"
+)
+def mark_booking_no_show(booking_id: int, slug: str = Query("anna"), db: Session = Depends(get_db)):
+    """Переводит запись в 'no_show'. Если до этого по ошибке нажали «Пришла»,
+    созданный доход удаляется."""
+    master = _get_master_or_404(db, slug)
+    booking = _get_master_booking_or_404(db, master, booking_id)
+    _check_visit_time(booking)
+
+    booking.status = "no_show"
+    booking.visited_at = datetime.now()
+    db.query(Transaction).filter(Transaction.booking_id == booking.id).delete()
+
+    db.commit()
+    db.refresh(booking)
+    return _build_booking_response(booking)
+
+
+@app.put(
+    "/api/app/transaction/{transaction_id}",
+    response_model=TransactionResponse,
+    tags=["Transactions"],
+    summary="Изменить сумму или категорию операции"
+)
+def update_transaction(
+    transaction_id: int,
+    payload: TransactionUpdate,
+    slug: str = Query("anna"),
+    db: Session = Depends(get_db)
+):
+    master = _get_master_or_404(db, slug)
+    tx = db.query(Transaction).filter(Transaction.id == transaction_id, Transaction.master_id == master.id).first()
+    if not tx:
+        raise HTTPException(status_code=404, detail="Операция не найдена")
+    if payload.amount is not None:
+        tx.amount = payload.amount
+    if payload.category is not None and payload.category.strip():
+        tx.category = payload.category.strip()
+    db.commit()
+    db.refresh(tx)
+    return TransactionResponse.model_validate(tx)
+
+
+@app.delete(
+    "/api/app/transaction/{transaction_id}",
+    tags=["Transactions"],
+    summary="Удалить операцию"
+)
+def delete_transaction(transaction_id: int, slug: str = Query("anna"), db: Session = Depends(get_db)):
+    master = _get_master_or_404(db, slug)
+    tx = db.query(Transaction).filter(Transaction.id == transaction_id, Transaction.master_id == master.id).first()
+    if not tx:
+        raise HTTPException(status_code=404, detail="Операция не найдена")
+    db.delete(tx)
+    db.commit()
+    return {"success": True, "deleted_id": transaction_id}
 
 
 # =====================================================================
@@ -946,10 +1147,17 @@ def parse_expense_with_ai(payload: AIExpenseRequest):
     и возвращает извлеченную сумму и категорию расхода.
     """
     parsed = ai_parser.parse_expense_phrase(payload.phrase)
+    if parsed["amount"] <= 0:
+        # Раньше здесь молча подставлялось 1000 ₽ — теперь честно просим уточнить
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Не нашёл сумму во фразе. Напишите её цифрами, например: «базы и топы 3200»"
+        )
     return AIExpenseResponse(
         amount=parsed["amount"],
         category=parsed["category"],
-        raw_phrase=payload.phrase
+        raw_phrase=payload.phrase,
+        source=parsed["source"]
     )
 
 
@@ -966,18 +1174,25 @@ def generate_reminder_with_ai(payload: AIReminderRequest, db: Session = Depends(
     """
     client = db.query(Client).filter(Client.id == payload.client_id).first()
     phone = client.phone if client else None
+    master = client.master if client else None
+    master_slug = master.slug if master else "anna"
+    # PUBLIC_URL (например https://masterboss.onrender.com) делает ссылку кликабельной в мессенджере
+    booking_url = f"{os.getenv('PUBLIC_URL', '').rstrip('/')}/c/{master_slug}"
 
-    msg = ai_parser.generate_client_reminder(
+    result = ai_parser.generate_client_reminder(
         client_name=payload.client_name,
         days_ago=payload.days_ago,
         cycle_days=payload.cycle_days,
-        service_name=payload.service_name or "маникюр"
+        service_name=payload.service_name or "маникюр",
+        master_name=master.name if master else "Анна Nails",
+        booking_url=booking_url
     )
 
     return AIReminderResponse(
-        message=msg,
+        message=result["message"],
         client_name=payload.client_name,
-        phone=phone
+        phone=phone,
+        source=result["source"]
     )
 
 
@@ -1033,13 +1248,13 @@ def handle_chat_message(payload: ChatMessageRequest, db: Session = Depends(get_d
             detail="Укажите ваше имя"
         )
 
-    # Извлечение параметров услуги, времени и цены
+    # Извлечение параметров услуги и времени.
+    # ЦЕНА от браузера ИГНОРИРУЕТСЯ: её берём только из прайса мастера (таблица Service).
     service_name = (payload.service_name or "").strip()
     datetime_str = (payload.datetime_str or "").strip()
-    price = payload.price
 
-    # Fallback на ai_parser, если параметры переданы текстом
-    if (not service_name or not datetime_str or price is None) and payload.message and payload.message.strip():
+    # Fallback на ai_parser, если услуга или время пришли свободным текстом
+    if ((not payload.service_id and not service_name) or not datetime_str) and payload.message and payload.message.strip():
         parsed_data = ai_parser.parse_booking_message(
             text=payload.message,
             client_name=name,
@@ -1047,27 +1262,21 @@ def handle_chat_message(payload: ChatMessageRequest, db: Session = Depends(get_d
         )
         service_name = service_name or (parsed_data.get("service_name") or "").strip()
         datetime_str = datetime_str or (parsed_data.get("datetime_str") or "").strip()
-        if price is None and parsed_data.get("price") is not None:
-            try:
-                price = float(parsed_data["price"])
-            except (ValueError, TypeError):
-                price = None
 
-    if not service_name:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Не указана услуга"
-        )
     if not datetime_str:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Не выбрана дата и время записи"
         )
-    if price is None:
+
+    service = find_master_service(db, master.id, payload.service_id, service_name)
+    if not service:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Не указана стоимость услуги"
+            detail="Услуга не найдена в прайсе мастера. Выберите услугу из списка"
         )
+    service_name = service.name
+    price = service.price
 
     scheduled_at = parse_datetime_str(datetime_str)
     if scheduled_at:
@@ -1104,7 +1313,7 @@ def handle_chat_message(payload: ChatMessageRequest, db: Session = Depends(get_d
             name=name,
             phone=clean_phone,
             cycle_days=21,
-            last_visit_date=datetime.now()
+            last_visit_date=None  # визита ещё не было: дата ставится по кнопке «Пришла»
         )
         db.add(client)
         db.commit()
@@ -1592,7 +1801,7 @@ def business_audit(slug: str = Query("anna", description="Slug мастера"),
         .all()
     )
     bookings_count = len(month_bookings)
-    cancelled_count = sum(1 for b in month_bookings if b.status in ("cancelled", "cancelled_by_client"))
+    cancelled_count = sum(1 for b in month_bookings if b.status in ("cancelled", "cancelled_by_client", "no_show"))
 
     # Клиенты в базе
     clients_count = db.query(Client).filter(Client.master_id == master.id).count()
@@ -1650,10 +1859,10 @@ def send_care_card(booking_id: int, db: Session = Depends(get_db)):
     if not booking:
         raise HTTPException(status_code=404, detail=f"Запись с ID {booking_id} не найдена")
 
-    if booking.status != "confirmed":
+    if booking.status != "completed":
         raise HTTPException(
             status_code=400,
-            detail="Памятку можно отправить только по подтверждённой записи"
+            detail="Памятку можно отправить после визита: сначала отметьте «Пришла»"
         )
 
     # Загружаем связанного клиента, если ещё не загружен
@@ -1665,7 +1874,7 @@ def send_care_card(booking_id: int, db: Session = Depends(get_db)):
     result = ai_parser.generate_post_care_card(service_name=service_name, client_name=client_name)
     card_text = result.get("care_card_text", "")
 
-    return CareCardResponse(success=True, card_text=card_text)
+    return CareCardResponse(success=True, card_text=card_text, source=result.get("source", "template"))
 
 
 # =====================================================================
