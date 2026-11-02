@@ -40,7 +40,8 @@ import {
   EyeOff,
   Bot,
   Zap,
-  Bell
+  Bell,
+  Trash2
 } from 'lucide-react'
 import {
   ResponsiveContainer,
@@ -134,6 +135,10 @@ export default function MasterApp() {
   const [expenseCategory, setExpenseCategory] = useState(EXPENSE_CATEGORIES[0])
   const [customCategory, setCustomCategory] = useState('')
   const [expenseSubmitting, setExpenseSubmitting] = useState(false)
+  const [editingTx, setEditingTx] = useState(null)          // null = новый расход, иначе операция для редактирования
+  const [expenseSource, setExpenseSource] = useState('manual') // 'manual' | 'ai'
+  const [aiExpenseHint, setAiExpenseHint] = useState(null)   // { phrase, source } — что распознал ИИ
+  const [confirmDeleteTx, setConfirmDeleteTx] = useState(false)
 
   // -------------------------------------------------------------------
   // УМНЫЙ ВВОД РАСХОДА ФРАЗОЙ ЧЕРЕЗ GIGACHAT
@@ -181,6 +186,7 @@ export default function MasterApp() {
   // GIGACHAT AI: БИЗНЕС-АУДИТ
   // -------------------------------------------------------------------
   const [businessAudit, setBusinessAudit] = useState(null)
+  const [businessAuditSource, setBusinessAuditSource] = useState(null)
   const [auditLoading, setAuditLoading] = useState(false)
 
   // -------------------------------------------------------------------
@@ -390,6 +396,7 @@ export default function MasterApp() {
       if (!res.ok) throw new Error('Сервер вернул ошибку ' + res.status)
       const data = await res.json()
       setBusinessAudit(data.audit_text)
+      setBusinessAuditSource(data.source || 'template')
       showToast('AI-аудит готов ✨', 'success')
     } catch (err) {
       showToast('Не удалось запустить аудит: ' + err.message, 'error')
@@ -703,6 +710,31 @@ export default function MasterApp() {
     }
   }
 
+  // «Пришла» → доход в кассу; «Не пришла» → неявка, доход по визиту убирается
+  const handleMarkVisit = async (bookingId, visited) => {
+    setBookingActionLoading(bookingId)
+    try {
+      const action = visited ? 'visited' : 'no-show'
+      const res = await fetch(`${API_BASE}/api/app/booking/${bookingId}/${action}?slug=${slug}`, { method: 'POST' })
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}))
+        throw new Error(errData.detail || 'Ошибка сервера')
+      }
+      const updated = await res.json()
+      await fetchStats(true)
+      showToast(
+        visited
+          ? `Визит отмечен ✅ +${Number(updated.price).toLocaleString('ru-RU')} ₽ в кассе`
+          : 'Отмечена неявка. Доход по этому визиту не учитывается',
+        visited ? 'success' : 'info'
+      )
+    } catch (err) {
+      showToast('Не удалось отметить визит: ' + err.message, 'error')
+    } finally {
+      setBookingActionLoading(null)
+    }
+  }
+
   const handleRejectBooking = async (bookingId) => {
     setBookingActionLoading(bookingId)
     const prevBookings = stats?.bookings || []
@@ -793,20 +825,75 @@ export default function MasterApp() {
 
     setExpenseSubmitting(true)
     try {
-      const res = await fetch(`${API_BASE}/api/app/transaction?slug=${slug}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'expense', amount: amountVal, category: finalCategory })
-      })
-      if (!res.ok) throw new Error('Ошибка сохранения расхода')
+      const res = editingTx
+        ? await fetch(`${API_BASE}/api/app/transaction/${editingTx.id}?slug=${slug}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ amount: amountVal, category: finalCategory })
+          })
+        : await fetch(`${API_BASE}/api/app/transaction?slug=${slug}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'expense', amount: amountVal, category: finalCategory, source: expenseSource })
+          })
+      if (!res.ok) throw new Error('Ошибка сохранения операции')
 
-      setIsExpenseModalOpen(false)
-      setExpenseAmount('')
-      setCustomCategory('')
+      const wasEditing = Boolean(editingTx)
+      closeExpenseModal()
+      if (expenseSource === 'ai') setAiExpensePhrase('')
       await fetchStats(true)
-      showToast(`Расход ${amountVal.toLocaleString('ru-RU')} ₽ успешно добавлен! 💳`, 'success')
+      showToast(
+        wasEditing
+          ? `Операция исправлена: ${amountVal.toLocaleString('ru-RU')} ₽ ✏️`
+          : `Расход ${amountVal.toLocaleString('ru-RU')} ₽ внесён в кассу 💳`,
+        'success'
+      )
     } catch (err) {
-      showToast('Ошибка при внесении расхода: ' + err.message, 'error')
+      showToast('Не удалось сохранить: ' + err.message, 'error')
+    } finally {
+      setExpenseSubmitting(false)
+    }
+  }
+
+  // Открыть модалку: новый расход, расход после ИИ или редактирование операции
+  const openExpenseModal = ({ tx = null, amount = '', category = EXPENSE_CATEGORIES[0], source = 'manual', hint = null } = {}) => {
+    const cat = tx ? tx.category : category
+    const known = EXPENSE_CATEGORIES.includes(cat)
+    setEditingTx(tx)
+    setExpenseAmount(tx ? String(tx.amount) : String(amount))
+    setExpenseCategory(known ? cat : 'Прочее')
+    setCustomCategory(known ? '' : cat)
+    setExpenseSource(source)
+    setAiExpenseHint(hint)
+    setConfirmDeleteTx(false)
+    setIsExpenseModalOpen(true)
+  }
+
+  const closeExpenseModal = () => {
+    setIsExpenseModalOpen(false)
+    setEditingTx(null)
+    setExpenseAmount('')
+    setCustomCategory('')
+    setExpenseSource('manual')
+    setAiExpenseHint(null)
+    setConfirmDeleteTx(false)
+  }
+
+  const handleDeleteTransaction = async () => {
+    if (!editingTx) return
+    if (!confirmDeleteTx) {
+      setConfirmDeleteTx(true)
+      return
+    }
+    setExpenseSubmitting(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/app/transaction/${editingTx.id}?slug=${slug}`, { method: 'DELETE' })
+      if (!res.ok) throw new Error('Ошибка удаления')
+      closeExpenseModal()
+      await fetchStats(true)
+      showToast('Операция удалена 🗑️', 'info')
+    } catch (err) {
+      showToast('Не удалось удалить: ' + err.message, 'error')
     } finally {
       setExpenseSubmitting(false)
     }
@@ -829,28 +916,19 @@ export default function MasterApp() {
         body: JSON.stringify({ phrase: aiExpensePhrase.trim() })
       })
 
-      if (!parseRes.ok) throw new Error('Сбой распознавания фразы нейросетью')
+      if (!parseRes.ok) {
+        const errData = await parseRes.json().catch(() => ({}))
+        throw new Error(errData.detail || 'Сбой распознавания фразы')
+      }
       const parsed = await parseRes.json()
 
-      // 2. Создаем транзакцию
-      const txRes = await fetch(`${API_BASE}/api/app/transaction?slug=${slug}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          type: 'expense',
-          amount: parsed.amount,
-          category: parsed.category
-        })
+      // 2. Не сохраняем сразу: мастер проверяет сумму и категорию в модалке
+      openExpenseModal({
+        amount: parsed.amount,
+        category: parsed.category,
+        source: 'ai',
+        hint: { phrase: aiExpensePhrase.trim(), source: parsed.source }
       })
-
-      if (!txRes.ok) throw new Error('Ошибка сохранения расхода')
-
-      setAiExpensePhrase('')
-      await fetchStats(true)
-      showToast(
-        `Расход ${parsed.amount.toLocaleString('ru-RU')} ₽ («${parsed.category}») внесен через GigaChat! 🤖✨`,
-        'success'
-      )
     } catch (err) {
       showToast('Ошибка умного ввода: ' + err.message, 'error')
     } finally {
@@ -985,6 +1063,9 @@ export default function MasterApp() {
   const filteredBookings = useMemo(() => {
     if (!stats?.bookings) return []
     if (bookingFilter === 'all') return stats.bookings
+    if (bookingFilter === 'visits') {
+      return stats.bookings.filter(b => b.status === 'completed' || b.status === 'no_show')
+    }
     if (bookingFilter === 'cancelled') {
       return stats.bookings.filter(b => b.status === 'cancelled' || b.status === 'cancelled_by_client')
     }
@@ -1462,6 +1543,16 @@ export default function MasterApp() {
                   Подтвержденные
                 </button>
                 <button
+                  onClick={() => setBookingFilter('visits')}
+                  className={`px-3 py-1.5 text-xs font-bold rounded-xl whitespace-nowrap transition-all ${
+                    bookingFilter === 'visits'
+                      ? 'bg-purple-600 text-white'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  Прошедшие визиты
+                </button>
+                <button
                   onClick={() => setBookingFilter('cancelled')}
                   className={`px-3 py-1.5 text-xs font-bold rounded-xl whitespace-nowrap transition-all ${
                     bookingFilter === 'cancelled'
@@ -1494,6 +1585,8 @@ export default function MasterApp() {
                   const isConfirmed = booking.status === 'confirmed'
                   const isCancelled = booking.status === 'cancelled'
                   const isCancelledByClient = booking.status === 'cancelled_by_client'
+                  const isCompleted = booking.status === 'completed'
+                  const isNoShow = booking.status === 'no_show'
                   const isActionLoading = bookingActionLoading === booking.id
 
                   return (
@@ -1513,7 +1606,7 @@ export default function MasterApp() {
                           <div className={`w-10 h-10 rounded-2xl flex items-center justify-center font-bold text-sm shrink-0 ${
                             isPending
                               ? 'bg-amber-100 text-amber-800'
-                              : isConfirmed
+                              : isConfirmed || isCompleted
                               ? 'bg-emerald-100 text-emerald-800'
                               : 'bg-slate-100 text-slate-600'
                           }`}>
@@ -1563,6 +1656,18 @@ export default function MasterApp() {
                             <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-slate-100 text-slate-600 text-[11px] font-bold border border-slate-200">
                               <XCircle className="w-3 h-3 text-rose-500" />
                               Занято / Отмена
+                            </span>
+                          )}
+                          {isCompleted && (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-emerald-600 text-white text-[11px] font-bold">
+                              <CheckCheck className="w-3 h-3" />
+                              Пришла
+                            </span>
+                          )}
+                          {isNoShow && (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-rose-100 text-rose-700 text-[11px] font-bold border border-rose-200">
+                              <XCircle className="w-3 h-3" />
+                              Не пришла
                             </span>
                           )}
                           {isCancelledByClient && (
@@ -1617,11 +1722,45 @@ export default function MasterApp() {
                         </div>
                       )}
 
-                      {/* КНОПКА ПАМЯТКИ УХОДА для confirmed броней */}
-                      {isConfirmed && (
+                      {/* ПОДТВЕРЖДЕНА, ВИЗИТ ЕЩЁ НЕ НАСТУПИЛ */}
+                      {isConfirmed && !booking.can_mark_visit && (
+                        <div className="mt-3 pt-3 border-t border-emerald-200 bg-emerald-50/70 -mx-4 -mb-4 p-4 rounded-b-3xl">
+                          <p className="text-[11px] text-emerald-900 leading-snug">
+                            Запись подтверждена на <strong>{booking.datetime_str}</strong>. После визита здесь появятся кнопки «Пришла» и «Не пришла».
+                          </p>
+                        </div>
+                      )}
+
+                      {/* ВРЕМЯ ВИЗИТА НАСТУПИЛО: ОТМЕТИТЬ «ПРИШЛА / НЕ ПРИШЛА» */}
+                      {isConfirmed && booking.can_mark_visit && (
+                        <div className="mt-3 pt-3 border-t border-purple-200 bg-purple-50/70 -mx-4 -mb-4 p-4 rounded-b-3xl">
+                          <p className="text-[11px] text-purple-900 mb-2.5 leading-snug">
+                            Визит <strong>{booking.datetime_str}</strong> прошёл. Клиент пришёл? «Пришла» сразу внесёт {Number(booking.price).toLocaleString('ru-RU')} ₽ в кассу.
+                          </p>
+                          <div className="grid grid-cols-2 gap-2">
+                            <button
+                              onClick={() => handleMarkVisit(booking.id, true)}
+                              disabled={isActionLoading}
+                              className="w-full py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-bold text-xs rounded-xl shadow-md shadow-emerald-500/20 transition-all flex items-center justify-center gap-1 disabled:opacity-50"
+                            >
+                              {isActionLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <span>Пришла ✅</span>}
+                            </button>
+                            <button
+                              onClick={() => handleMarkVisit(booking.id, false)}
+                              disabled={isActionLoading}
+                              className="w-full py-2.5 px-3 bg-white hover:bg-rose-50 text-rose-600 border border-rose-200 active:scale-95 font-bold text-xs rounded-xl transition-all flex items-center justify-center gap-1 disabled:opacity-50"
+                            >
+                              {isActionLoading ? <RefreshCw className="w-4 h-4 animate-spin text-rose-500" /> : <span>Не пришла</span>}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* ПРИШЛА: ПАМЯТКА ПО УХОДУ + ВОЗМОЖНОСТЬ ИСПРАВИТЬ ОТМЕТКУ */}
+                      {isCompleted && (
                         <div className="mt-3 pt-3 border-t border-emerald-200 bg-emerald-50/70 -mx-4 -mb-4 p-4 rounded-b-3xl">
                           <p className="text-[11px] text-emerald-900 mb-2.5 leading-snug">
-                            Посещение подтверждено на <strong>{booking.datetime_str}</strong>. Пришлите клиенту памятку по уходу:
+                            {Number(booking.price).toLocaleString('ru-RU')} ₽ в кассе. Пришлите клиенту памятку по уходу:
                           </p>
                           <button
                             onClick={() => openCareCardModal(booking.id, booking.client_name, booking.service_name)}
@@ -1631,6 +1770,29 @@ export default function MasterApp() {
                             {careCardModal.loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <>
                               <span className="text-[11px]">Отправить памятку ухода 🧴</span>
                             </>}
+                          </button>
+                          <button
+                            onClick={() => handleMarkVisit(booking.id, false)}
+                            disabled={isActionLoading}
+                            className="mt-2 w-full text-[11px] text-slate-500 hover:text-rose-600 underline underline-offset-2"
+                          >
+                            Исправить на «Не пришла»
+                          </button>
+                        </div>
+                      )}
+
+                      {/* НЕ ПРИШЛА: ИСПРАВИТЬ ОТМЕТКУ */}
+                      {isNoShow && (
+                        <div className="mt-3 pt-3 border-t border-rose-200 bg-rose-50/60 -mx-4 -mb-4 p-4 rounded-b-3xl">
+                          <p className="text-[11px] text-rose-900 leading-snug">
+                            Неявка учтена в аудите. Доход по визиту не начислен.
+                          </p>
+                          <button
+                            onClick={() => handleMarkVisit(booking.id, true)}
+                            disabled={isActionLoading}
+                            className="mt-2 w-full text-[11px] text-slate-500 hover:text-emerald-700 underline underline-offset-2"
+                          >
+                            Исправить на «Пришла»
                           </button>
                         </div>
                       )}
@@ -1671,7 +1833,7 @@ export default function MasterApp() {
               <div className="flex items-center justify-between pt-2 mt-2 border-t border-white/15 text-xs text-emerald-100">
                 <span>Выручка минус расходы мастера</span>
                 <button
-                  onClick={() => setIsExpenseModalOpen(true)}
+                  onClick={() => openExpenseModal()}
                   className="px-2.5 py-1 bg-white text-emerald-800 hover:bg-emerald-50 font-bold rounded-xl text-xs flex items-center gap-1 shadow-sm active:scale-95"
                 >
                   <Plus className="w-3.5 h-3.5" />
@@ -1843,10 +2005,13 @@ export default function MasterApp() {
                   Последние операции в кассе
                 </h3>
                 <div className="space-y-2">
-                  {stats.transactions.slice(0, 5).map(tx => (
-                    <div
+                  {stats.transactions.slice(0, 10).map(tx => (
+                    <button
+                      type="button"
                       key={tx.id}
-                      className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-100 text-xs"
+                      onClick={() => openExpenseModal({ tx })}
+                      title="Изменить или удалить операцию"
+                      className="w-full text-left flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-100 text-xs hover:bg-purple-50 hover:border-purple-100 transition-colors"
                     >
                       <div className="flex items-center gap-2">
                         <div className={`w-6 h-6 rounded-md flex items-center justify-center shrink-0 ${
@@ -1856,10 +2021,13 @@ export default function MasterApp() {
                         </div>
                         <span className="font-semibold text-slate-800 truncate max-w-[200px]">{tx.category}</span>
                       </div>
-                      <span className={`font-mono font-bold ${tx.type === 'income' ? 'text-emerald-600' : 'text-slate-800'}`}>
-                        {tx.type === 'income' ? '+' : '-'} {Number(tx.amount).toLocaleString('ru-RU')} ₽
+                      <span className="flex items-center gap-2 shrink-0">
+                        <span className={`font-mono font-bold ${tx.type === 'income' ? 'text-emerald-600' : 'text-slate-800'}`}>
+                          {tx.type === 'income' ? '+' : '-'} {Number(tx.amount).toLocaleString('ru-RU')} ₽
+                        </span>
+                        <Edit3 className="w-3.5 h-3.5 text-slate-400" />
                       </span>
-                    </div>
+                    </button>
                   ))}
                 </div>
               </div>
@@ -1895,7 +2063,12 @@ export default function MasterApp() {
                 <h2 className="text-sm sm:text-base font-bold mb-1">✨ AI-Анализ финансов от GigaChat</h2>
                 <p className="text-xs text-indigo-100/90 mb-3 leading-relaxed max-w-lg">
                   {businessAudit ? (
-                    <span dangerouslySetInnerHTML={{ __html: businessAudit.replace(/\n/g, '<br>') }} />
+                    <span style={{ whiteSpace: 'pre-line' }}>
+                      {businessAudit}
+                      {businessAuditSource === 'template' && (
+                        <span className="block mt-2 text-[11px] opacity-70">Шаблон: GigaChat сейчас недоступен</span>
+                      )}
+                    </span>
                   ) : (
                     'Нажмите кнопку выше, чтобы получить анализ финансов и рекомендации по росту чека.'
                   )}
@@ -2624,14 +2797,28 @@ export default function MasterApp() {
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
           <div className="w-full max-w-sm bg-white rounded-t-3xl sm:rounded-3xl p-5 shadow-modal border border-slate-100">
             <div className="flex items-center justify-between pb-2 mb-3 border-b border-slate-100">
-              <h3 className="font-bold text-slate-900 text-sm">Внести расход мастера</h3>
+              <h3 className="font-bold text-slate-900 text-sm">
+                {editingTx ? 'Изменить операцию' : expenseSource === 'ai' ? 'Проверьте расход' : 'Внести расход мастера'}
+              </h3>
               <button
-                onClick={() => setIsExpenseModalOpen(false)}
+                onClick={closeExpenseModal}
                 className="p-1 text-slate-400 hover:text-slate-600"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
+
+            {aiExpenseHint && (
+              <div className="mb-3 p-2.5 rounded-xl bg-purple-50 border border-purple-100 text-[11px] text-purple-900 leading-snug">
+                «{aiExpenseHint.phrase}» — {aiExpenseHint.source === 'gigachat' ? 'распознал GigaChat' : 'распознано без ИИ'}.
+                Проверьте сумму и категорию перед сохранением.
+              </div>
+            )}
+            {editingTx?.source === 'booking' && (
+              <div className="mb-3 p-2.5 rounded-xl bg-amber-50 border border-amber-100 text-[11px] text-amber-900 leading-snug">
+                Это доход по визиту. Если клиентка не пришла, лучше нажмите «Не пришла» в карточке записи.
+              </div>
+            )}
 
             <form onSubmit={handleAddExpenseSubmit} className="space-y-3">
               <div>
@@ -2686,7 +2873,7 @@ export default function MasterApp() {
               <div className="grid grid-cols-2 gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setIsExpenseModalOpen(false)}
+                  onClick={closeExpenseModal}
                   className="py-2.5 px-3 bg-slate-100 text-slate-700 font-bold text-xs rounded-xl"
                 >
                   Отмена
@@ -2699,6 +2886,19 @@ export default function MasterApp() {
                   {expenseSubmitting ? <RefreshCw className="w-3.5 h-3.5 animate-spin mx-auto" /> : <span>Сохранить</span>}
                 </button>
               </div>
+              {editingTx && (
+                <button
+                  type="button"
+                  onClick={handleDeleteTransaction}
+                  disabled={expenseSubmitting}
+                  className={`w-full py-2.5 px-3 font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 transition-all ${
+                    confirmDeleteTx ? 'bg-rose-600 text-white' : 'bg-white text-rose-600 border border-rose-200 hover:bg-rose-50'
+                  }`}
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  {confirmDeleteTx ? 'Точно удалить? Нажмите ещё раз' : 'Удалить операцию'}
+                </button>
+              )}
             </form>
           </div>
         </div>

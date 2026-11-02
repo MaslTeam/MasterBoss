@@ -82,9 +82,10 @@ class Booking(Base):
     price = Column(Float, nullable=False, default=0.0)                  # Стоимость услуги
     datetime_str = Column(String(50), nullable=False)                   # Дата и время записи строкой (например '2026-10-26 14:00')
     scheduled_at = Column(DateTime, nullable=True)                      # точная дата и время визита для расчета таймингов
-    status = Column(String(30), nullable=False, default="pending")      # 'pending', 'confirmed', 'cancelled'
+    status = Column(String(30), nullable=False, default="pending")      # 'pending', 'confirmed', 'cancelled', 'cancelled_by_client', 'completed', 'no_show'
     master_notified_cancellation = Column(Boolean, default=True)        # флаг прочтения мастером алерта об отмене
     reminder_sent = Column(Boolean, default=False, nullable=False)      # флаг: отправлено ли напоминание за час
+    visited_at = Column(DateTime, nullable=True)                        # когда мастер отметил «Пришла» / «Не пришла»
 
     # Связи
     master = relationship("Master", back_populates="bookings")
@@ -125,6 +126,8 @@ class Transaction(Base):
     amount = Column(Float, nullable=False)                              # Сумма в рублях
     category = Column(String(100), nullable=False)                      # Категория (например 'Процедура', 'Материалы', 'Аренда')
     date = Column(DateTime, default=datetime.utcnow, nullable=False)
+    source = Column(String(20), nullable=True)                          # 'manual' | 'ai' | 'booking'
+    booking_id = Column(Integer, ForeignKey("bookings.id", ondelete="SET NULL"), nullable=True, index=True)  # доход по визиту
 
     # Связи
     master = relationship("Master", back_populates="transactions")
