@@ -80,6 +80,8 @@ class BookingResponse(BaseModel):
     price: float
     datetime_str: str
     status: str
+    scheduled_at: Optional[datetime] = None
+    can_mark_visit: bool = Field(default=False, description="Время визита наступило — можно отметить «Пришла / Не пришла»")
 
 
 class BookingStatusResponse(BaseModel):
@@ -96,6 +98,13 @@ class TransactionCreate(BaseModel):
     type: Literal["income", "expense"] = Field(..., description="Тип операции: income (доход) или expense (расход)")
     amount: float = Field(..., gt=0, description="Сумма в рублях")
     category: str = Field(..., min_length=1, max_length=100, description="Категория операции")
+    source: Optional[Literal["manual", "ai"]] = Field(default="manual", description="Как внесена: вручную или через ИИ")
+
+
+class TransactionUpdate(BaseModel):
+    """Схема редактирования финансовой операции"""
+    amount: Optional[float] = Field(default=None, gt=0, description="Новая сумма в рублях")
+    category: Optional[str] = Field(default=None, min_length=1, max_length=100, description="Новая категория")
 
 
 class TransactionResponse(BaseModel):
@@ -107,6 +116,8 @@ class TransactionResponse(BaseModel):
     amount: float
     category: str
     date: datetime
+    source: Optional[str] = None
+    booking_id: Optional[int] = None
 
 
 
