@@ -45,6 +45,10 @@ def _giga_complete(system_prompt: str, user_prompt: str) -> str:
     if not credentials:
         LAST_AI_ERROR = "Переменная GIGACHAT_CREDENTIALS не задана"
         raise GigaChatUnavailable(LAST_AI_ERROR)
+    if not credentials.isascii() or " " in credentials:
+        LAST_AI_ERROR = ("В GIGACHAT_CREDENTIALS осталась заглушка или лишние символы: ключ состоит только из "
+                         "латиницы, цифр и знаков =/+. Вставьте Authorization key из кабинета GigaChat целиком")
+        raise GigaChatUnavailable(LAST_AI_ERROR)
 
     try:
         from gigachat import GigaChat
