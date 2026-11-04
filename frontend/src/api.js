@@ -66,3 +66,35 @@ export function slugify(text) {
     .slice(0, 30)
     .replace(/-+$/g, '')
 }
+
+// Запрос к API кабинета с разбором JSON и понятной ошибкой
+export async function apiJson(path, { method = 'GET', body } = {}) {
+  const res = await apiFetch(`${API_BASE}${path}`, {
+    method,
+    headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const detail = typeof data.detail === 'string' ? data.detail : `Ошибка сервера (${res.status})`
+    throw new Error(detail)
+  }
+  return data
+}
+
+// Публичный запрос (страница записи клиента)
+export async function publicJson(path, { method = 'GET', body } = {}) {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method,
+    headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const detail = typeof data.detail === 'string' ? data.detail : `Ошибка сервера (${res.status})`
+    const err = new Error(detail)
+    err.status = res.status
+    throw err
+  }
+  return data
+}

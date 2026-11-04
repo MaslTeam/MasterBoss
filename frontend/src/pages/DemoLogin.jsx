@@ -25,18 +25,19 @@ export default function DemoLogin() {
   }, [navigate])
 
   return (
-    <div className="min-h-screen bg-slate-50 flex items-center justify-center px-4">
+    <div className="min-h-screen bg-white flex items-center justify-center px-4">
       <div className="text-center">
         {error ? (
           <>
-            <p className="text-sm font-bold text-rose-700">{error}</p>
-            <p className="text-xs text-slate-500 mt-1">Сервер мог «уснуть» — подождите 30–60 секунд и обновите страницу.</p>
-            <Link to="/" className="inline-block mt-4 text-xs font-bold text-purple-700">← На главную</Link>
+            <p className="text-base font-extrabold text-danger">{error}</p>
+            <p className="text-sm text-muted mt-1">Сервер мог «уснуть» — подождите 30–60 секунд и обновите страницу.</p>
+            <Link to="/" className="inline-block mt-4 text-sm font-bold text-ink">← На главную</Link>
           </>
         ) : (
           <>
-            <div className="w-8 h-8 mx-auto rounded-full border-2 border-purple-200 border-t-purple-600 animate-spin" />
-            <p className="text-sm text-slate-600 mt-3">Открываем демо-кабинет…</p>
+            <div className="w-10 h-10 mx-auto rounded-full border-[3px] border-sunsoft border-t-sun mb-spin" />
+            <p className="font-display font-semibold text-base mt-4">Открываем демо-кабинет…</p>
+            <p className="text-sm text-muted mt-1">Первый запуск сервера может занять до минуты</p>
           </>
         )}
       </div>

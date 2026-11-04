@@ -84,6 +84,7 @@ class MasterResponse(BaseModel):
     trial_active: bool
     pin_code: Optional[str] = None
     services: list[ServiceResponse] = []
+    schedule_text: Optional[str] = None      # «пн–сб 10:00–20:00» для шапки страницы записи
 
 
 class BookingResponse(BaseModel):
@@ -99,6 +100,9 @@ class BookingResponse(BaseModel):
     status: str
     scheduled_at: Optional[datetime] = None
     can_mark_visit: bool = Field(default=False, description="Время визита наступило — можно отметить «Пришла / Не пришла»")
+    source: Optional[str] = None
+    ref: Optional[str] = None
+    created_at: Optional[datetime] = None
 
 
 class BookingStatusResponse(BaseModel):

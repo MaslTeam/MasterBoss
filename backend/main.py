@@ -416,6 +416,29 @@ def generate_free_slots(db: Session, master: Master, duration_min: int) -> list:
     return slots
 
 
+WEEKDAY_SHORT_RU = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
+
+
+def schedule_text(master: Master) -> str:
+    """Коротко о графике: «пн–сб 10:00–20:00» или «пн–пт 10:00–20:00, сб 11:00–17:00»."""
+    schedule = get_work_schedule(master)
+    groups = []
+    for i, day in enumerate(WEEKDAYS):
+        hours = schedule.get(day)
+        if not hours:
+            continue
+        label = f"{hours[0]}–{hours[1]}"
+        if groups and groups[-1][1] == label and groups[-1][0][-1] == i - 1:
+            groups[-1][0].append(i)
+        else:
+            groups.append(([i], label))
+    parts = []
+    for days, label in groups:
+        name = WEEKDAY_SHORT_RU[days[0]] if len(days) == 1 else f"{WEEKDAY_SHORT_RU[days[0]]}–{WEEKDAY_SHORT_RU[days[-1]]}"
+        parts.append(f"{name} {label}")
+    return ", ".join(parts) or "по договорённости"
+
+
 def client_token_ok(booking: Booking, token: Optional[str]) -> bool:
     """Проверка секрета клиента. У записей, созданных до Дня 5, секрета нет — их пропускаем."""
     if not booking.client_token:
@@ -460,7 +483,10 @@ def _build_booking_response(booking: Booking) -> BookingResponse:
         datetime_str=booking.datetime_str,
         status=booking.status,
         scheduled_at=visit_at,
-        can_mark_visit=can_mark_visit
+        can_mark_visit=can_mark_visit,
+        source=booking.source,
+        ref=booking.ref,
+        created_at=booking.created_at
     )
 
 
@@ -532,7 +558,8 @@ def get_master_by_slug(slug: str, db: Session = Depends(get_db)):
         default_deposit=master.default_deposit,
         trial_active=master.trial_active,
         pin_code=None,  # безопасность: не передаем pin клиенту
-        services=[ServiceResponse.model_validate(s) for s in active_services]
+        services=[ServiceResponse.model_validate(s) for s in active_services],
+        schedule_text=schedule_text(master)
     )
 
 
@@ -1166,6 +1193,66 @@ def get_master_stats(slug: str = Depends(auth_slug), db: Session = Depends(get_d
         transactions=transactions_response,
         new_cancellations=cancellations_response
     )
+
+
+@app.get(
+    "/api/app/bookings",
+    response_model=list[BookingResponse],
+    tags=["Bookings"],
+    summary="Записи мастера для вкладки «Записи»: новые, ближайшие и за последние 2 недели"
+)
+def list_bookings(master_id: int = Depends(auth_master_id), db: Session = Depends(get_db)):
+    since = datetime.now() - timedelta(days=14)
+    bookings = db.query(Booking).filter(Booking.master_id == master_id).all()
+    result = []
+    for b in bookings:
+        visit = booking_visit_time(b)
+        if b.status == "pending" or (visit and visit >= since):
+            result.append((visit or datetime.max, b))
+    result.sort(key=lambda x: x[0])
+    return [_build_booking_response(b) for _, b in result[:300]]
+
+
+@app.get(
+    "/api/app/finance",
+    tags=["App"],
+    summary="Касса за месяц: доход, расход, налог 4%, доход по неделям и операции"
+)
+def finance_month(
+    month: Optional[str] = Query(None, description="Месяц в формате ГГГГ-ММ; по умолчанию текущий"),
+    master_id: int = Depends(auth_master_id),
+    db: Session = Depends(get_db)
+):
+    now = datetime.now()
+    try:
+        start = datetime.strptime(month, "%Y-%m") if month else now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Месяц — в формате ГГГГ-ММ")
+    end = (start.replace(day=28) + timedelta(days=4)).replace(day=1)
+    txs = (
+        db.query(Transaction)
+        .filter(Transaction.master_id == master_id, Transaction.date >= start, Transaction.date < end)
+        .order_by(Transaction.date.desc(), Transaction.id.desc())
+        .all()
+    )
+    income = sum(t.amount for t in txs if t.type == "income")
+    expense = sum(t.amount for t in txs if t.type == "expense")
+    # Недели месяца: 1–7, 8–14, 15–21, 22–конец
+    weeks = []
+    for i, (d1, d2) in enumerate(((1, 7), (8, 14), (15, 21), (22, 31))):
+        last_day = (end - timedelta(days=1)).day
+        d2 = min(d2, last_day)
+        week_income = sum(t.amount for t in txs if t.type == "income" and d1 <= t.date.day <= d2)
+        weeks.append({"label": f"{d1}–{d2}", "income": round(week_income, 2)})
+    return {
+        "month": start.strftime("%Y-%m"),
+        "income": round(income, 2),
+        "expense": round(expense, 2),
+        "profit": round(income - expense, 2),
+        "tax": round(income * 0.04, 2),
+        "weeks": weeks,
+        "transactions": [TransactionResponse.model_validate(t).model_dump(mode="json") for t in txs],
+    }
 
 
 @app.post(
