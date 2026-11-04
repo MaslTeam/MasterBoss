@@ -55,13 +55,17 @@ export default function Landing() {
               Создать страницу бесплатно
             </Link>
             <Link
-              to="/c/anna"
+              to="/demo"
               className="px-5 py-3 bg-white border border-slate-200 hover:border-slate-300 text-slate-800 font-bold text-sm rounded-xl"
             >
-              Посмотреть как клиент
+              Открыть демо-кабинет
             </Link>
           </div>
-          <p className="mt-3 text-[11px] text-slate-400">Без карты и договора. Страница готова за минуту.</p>
+          <p className="mt-3 text-[11px] text-slate-400">
+            Без карты и договора. Или{' '}
+            <Link to="/c/demo" className="font-bold text-purple-700 hover:underline">запишитесь как клиент</Link>
+            {' '}в демо-салон.
+          </p>
         </section>
 
         <section className="grid sm:grid-cols-3 gap-3 pb-10">

@@ -2,6 +2,8 @@ import os
 import sys
 import re
 import json
+import hmac
+import secrets
 import threading
 import time
 from datetime import datetime, timedelta
@@ -17,6 +19,7 @@ load_dotenv()
 from fastapi import FastAPI, Depends, HTTPException, Query, Request, status
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from sqlalchemy import or_
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
@@ -62,6 +65,7 @@ from schemas import (
 )
 import ai_parser
 import auth
+import demo_data
 from auth import auth_slug, auth_master_id
 
 # Автоматическое создание таблиц, если они еще не существуют
@@ -73,9 +77,11 @@ def _ensure_sqlite_columns():
     Добавляем их вручную, чтобы старая база (локальная или на диске сервера) не падала."""
     from sqlalchemy import inspect, text
     required = {
-        "bookings": {"visited_at": "DATETIME"},
+        "bookings": {"visited_at": "DATETIME", "source": "VARCHAR(20)", "ref": "VARCHAR(20)",
+                     "client_token": "VARCHAR(64)", "created_at": "DATETIME"},
         "transactions": {"source": "VARCHAR(20)", "booking_id": "INTEGER"},
-        "masters": {"work_schedule": "VARCHAR(500)", "slot_step_min": "INTEGER", "created_at": "DATETIME"},
+        "masters": {"work_schedule": "VARCHAR(500)", "slot_step_min": "INTEGER", "created_at": "DATETIME",
+                    "is_demo": "BOOLEAN"},
         "clients": {"return_push_at": "DATETIME"},
         "push_subscriptions": {"client_id": "INTEGER"},
     }
@@ -410,6 +416,13 @@ def generate_free_slots(db: Session, master: Master, duration_min: int) -> list:
     return slots
 
 
+def client_token_ok(booking: Booking, token: Optional[str]) -> bool:
+    """Проверка секрета клиента. У записей, созданных до Дня 5, секрета нет — их пропускаем."""
+    if not booking.client_token:
+        return True
+    return bool(token) and hmac.compare_digest(token, booking.client_token)
+
+
 def find_master_service(db: Session, master_id: int, service_id: Optional[int], service_name: str) -> Optional[Service]:
     """Ищет АКТИВНУЮ услугу мастера: сначала по id, затем по точному названию,
     затем по частичному совпадению («педикюр» → «Педикюр с покрытием»)."""
@@ -654,6 +667,114 @@ def register_master(payload: RegisterRequest, db: Session = Depends(get_db)):
 
 
 # =====================================================================
+# ДЕМО-КАБИНЕТ ДЛЯ ЖЮРИ И СЧЁТЧИК ПИЛОТА
+# =====================================================================
+
+def _seed_demo():
+    db = SessionLocal()
+    try:
+        demo_data.ensure_demo_master(db, DEFAULT_WORK_SCHEDULE)
+        print("[Demo] демо-кабинет /c/demo заполнен свежими данными", flush=True)
+    except Exception as e:
+        db.rollback()
+        print(f"[Demo warning] {e}", flush=True)
+    finally:
+        db.close()
+
+
+_seed_demo()
+
+
+@app.post(
+    "/api/demo/login",
+    response_model=LoginResponse,
+    tags=["Auth"],
+    summary="Вход в демо-кабинет без PIN (для жюри и показов)"
+)
+def demo_login(db: Session = Depends(get_db)):
+    master = db.query(Master).filter(Master.slug == demo_data.DEMO_SLUG).first()
+    if not master:
+        master = demo_data.ensure_demo_master(db, DEFAULT_WORK_SCHEDULE)
+    return LoginResponse(
+        success=True,
+        token=auth.create_token(master.id, master.slug),
+        slug=master.slug,
+        name=master.name,
+        is_demo=True
+    )
+
+
+@app.post(
+    "/api/app/demo/reset",
+    tags=["Auth"],
+    summary="Вернуть демо-кабинет к исходным данным"
+)
+def demo_reset(master_id: int = Depends(auth_master_id), db: Session = Depends(get_db)):
+    master = db.query(Master).filter(Master.id == master_id).first()
+    if not master or not master.is_demo:
+        raise HTTPException(status_code=403, detail="Сбросить можно только демо-кабинет")
+    demo_data.reset_demo_data(db, master, DEFAULT_WORK_SCHEDULE)
+    return {"success": True}
+
+
+REF_LABELS = {"insta": "Instagram", "tg": "Telegram", "max": "MAX", "vk": "ВКонтакте", "avito": "Авито", "qr": "QR-код"}
+
+
+def _booking_created(b: Booking) -> Optional[datetime]:
+    return b.created_at or b.scheduled_at
+
+
+@app.get(
+    "/api/app/pilot-stats",
+    tags=["App"],
+    summary="Сколько записей пришло через ссылку мастера (счётчик пилота)"
+)
+def pilot_stats(master_id: int = Depends(auth_master_id), db: Session = Depends(get_db)):
+    bookings = db.query(Booking).filter(Booking.master_id == master_id, Booking.source == "link").all()
+    now = datetime.now()
+    by_ref = {}
+    for b in bookings:
+        key = b.ref or "direct"
+        by_ref[key] = by_ref.get(key, 0) + 1
+    visits = [b for b in bookings if b.status == "completed"]
+    created = [_booking_created(b) for b in bookings if _booking_created(b)]
+    return {
+        "total": len(bookings),
+        "last_7_days": sum(1 for d in created if d >= now - timedelta(days=7)),
+        "last_30_days": sum(1 for d in created if d >= now - timedelta(days=30)),
+        "visits": len(visits),
+        "revenue": round(sum(b.price for b in visits), 2),
+        "by_ref": sorted(
+            [{"ref": k, "label": REF_LABELS.get(k, "Прямая ссылка" if k == "direct" else k), "count": v}
+             for k, v in by_ref.items()],
+            key=lambda x: -x["count"]
+        ),
+        "since": min(created).strftime("%d.%m.%Y") if created else None,
+    }
+
+
+@app.get(
+    "/api/public/pilot-stats",
+    tags=["Health"],
+    summary="Общие цифры пилота для презентации (без демо-кабинета и без личных данных)"
+)
+def public_pilot_stats(db: Session = Depends(get_db)):
+    real_masters = db.query(Master).filter(or_(Master.is_demo == False, Master.is_demo.is_(None))).all()
+    ids = [m.id for m in real_masters]
+    bookings = db.query(Booking).filter(Booking.master_id.in_(ids), Booking.source == "link").all() if ids else []
+    now = datetime.now()
+    created = [_booking_created(b) for b in bookings if _booking_created(b)]
+    return {
+        "masters": len(real_masters),
+        "masters_with_bookings": len({b.master_id for b in bookings}),
+        "bookings_via_link": len(bookings),
+        "bookings_last_7_days": sum(1 for d in created if d >= now - timedelta(days=7)),
+        "visits_via_link": sum(1 for b in bookings if b.status == "completed"),
+        "since": min(created).strftime("%d.%m.%Y") if created else None,
+    }
+
+
+# =====================================================================
 # 3. УПРАВЛЕНИЕ ПРОФИЛЕМ И УСЛУГАМИ МАСТЕРА
 # =====================================================================
 
@@ -682,6 +803,7 @@ def get_master_profile(
         "trial_active": master.trial_active,
         "work_schedule": get_work_schedule(master),
         "slot_step_min": master.slot_step_min or 60,
+        "is_demo": bool(master.is_demo),
     }
 
 
@@ -708,6 +830,8 @@ def update_master_profile(
     if payload.niche is not None and payload.niche.strip():
         master.niche = payload.niche.strip()
     if payload.pin_code is not None and payload.pin_code.strip():
+        if master.is_demo:
+            raise HTTPException(status_code=403, detail="В демо-кабинете PIN не меняется")
         pin_error = auth.validate_pin_format(payload.pin_code.strip())
         if pin_error:
             raise HTTPException(status_code=400, detail=pin_error)
@@ -762,6 +886,8 @@ def change_master_pin(
             detail=f"Мастер со слагом '{slug}' не найден"
         )
 
+    if master.is_demo:
+        raise HTTPException(status_code=403, detail="В демо-кабинете PIN не меняется")
     if not payload.old_pin or not auth.verify_pin(payload.old_pin.strip(), master.pin_code):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -940,12 +1066,17 @@ def get_available_slots(
     tags=["Bookings"],
     summary="Проверить статус бронирования (для live polling клиентом)"
 )
-def get_booking_status(booking_id: int, db: Session = Depends(get_db)):
+def get_booking_status(
+    booking_id: int,
+    token: Optional[str] = Query(None, description="client_token из ответа на запись"),
+    db: Session = Depends(get_db)
+):
     """
     Возвращает { id, status, service_name, datetime_str, can_cancel } для записи.
+    Нужен client_token, который клиент получил при записи: чужие записи перебором номеров не посмотреть.
     """
     booking = db.query(Booking).filter(Booking.id == booking_id).first()
-    if not booking:
+    if not booking or not client_token_ok(booking, token):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Запись с ID {booking_id} не найдена"
@@ -1064,10 +1195,14 @@ def confirm_booking(booking_id: int, master_id: int = Depends(auth_master_id), d
     tags=["Bookings"],
     summary="Отмена брони клиентом"
 )
-def cancel_booking_by_client(booking_id: int, db: Session = Depends(get_db)):
-    """Отменяет бронь клиентом, если до визита 24+ часа"""
+def cancel_booking_by_client(
+    booking_id: int,
+    token: Optional[str] = Query(None, description="client_token из ответа на запись"),
+    db: Session = Depends(get_db)
+):
+    """Отменяет бронь клиентом, если до визита 24+ часа. Нужен client_token этой записи."""
     booking = db.query(Booking).filter(Booking.id == booking_id).first()
-    if not booking:
+    if not booking or not client_token_ok(booking, token):
         raise HTTPException(status_code=404, detail="Запись не найдена")
 
     # Защита от повторной отмены уже отменённой записи
@@ -1525,7 +1660,13 @@ def handle_chat_message(payload: ChatMessageRequest, db: Session = Depends(get_d
         db.refresh(client)
 
     # Создание бронирования со статусом 'pending'
+    source = payload.source if payload.source in ("link", "test") else "api"
+    ref = re.sub(r"[^a-z0-9_-]", "", (payload.ref or "").lower())[:20] or None
     new_booking = Booking(
+        source=source,
+        ref=ref if source == "link" else None,
+        client_token=secrets.token_urlsafe(16),
+        created_at=datetime.now(),
         master_id=master.id,
         client_id=client.id,
         service_name=service_name,
@@ -1552,6 +1693,7 @@ def handle_chat_message(payload: ChatMessageRequest, db: Session = Depends(get_d
         reply_text=reply_text,
         booking_created=True,
         booking_id=new_booking.id,
+        client_token=new_booking.client_token,
         details={
             "booking_id": new_booking.id,
             "client_name": name,
@@ -1721,7 +1863,7 @@ def push_subscribe(payload: PushSubscriptionCreate, request: Request, db: Sessio
                 .filter(Booking.id == payload.booking_id, Master.slug == master_slug)
                 .first()
             )
-            if booking:
+            if booking and client_token_ok(booking, payload.booking_token):
                 client_id = booking.client_id
     else:
         token = auth.token_from_request(request)

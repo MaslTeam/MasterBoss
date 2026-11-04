@@ -26,6 +26,7 @@ class Master(Base):
     work_schedule = Column(String(500), nullable=True)                  # JSON: {"mon": ["10:00", "20:00"], ..., "sun": null}
     slot_step_min = Column(Integer, default=60, nullable=True)          # шаг начала записи, минут
     created_at = Column(DateTime, default=datetime.utcnow, nullable=True)
+    is_demo = Column(Boolean, default=False, nullable=True)                 # демо-кабинет для жюри
 
     # Связи
     services = relationship("Service", back_populates="master", cascade="all, delete-orphan")
@@ -90,6 +91,10 @@ class Booking(Base):
     master_notified_cancellation = Column(Boolean, default=True)        # флаг прочтения мастером алерта об отмене
     reminder_sent = Column(Boolean, default=False, nullable=False)      # флаг: отправлено ли напоминание за час
     visited_at = Column(DateTime, nullable=True)                        # когда мастер отметил «Пришла» / «Не пришла»
+    source = Column(String(20), nullable=True)                          # 'link' — клиент сам через ссылку, 'test' — тестовая из кабинета, 'api' — прочее
+    ref = Column(String(20), nullable=True)                             # метка ?from= из ссылки: insta, tg, max…
+    client_token = Column(String(64), nullable=True)                    # секрет клиента: статус и отмена только с ним
+    created_at = Column(DateTime, default=datetime.now, nullable=True)  # когда пришла заявка
 
     # Связи
     master = relationship("Master", back_populates="bookings")

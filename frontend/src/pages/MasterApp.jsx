@@ -163,6 +163,10 @@ export default function MasterApp() {
   const [workSchedule, setWorkSchedule] = useState(null)
   const [slotStep, setSlotStep] = useState(60)
   const [scheduleSaving, setScheduleSaving] = useState(false)
+  const [isDemo, setIsDemo] = useState(false)
+  const [demoResetting, setDemoResetting] = useState(false)
+  const [pilotStats, setPilotStats] = useState(null)
+  const [refCopied, setRefCopied] = useState('')
 
   // Модальные окна услуг
   const [serviceModal, setServiceModal] = useState({ open: false, mode: 'create', data: { name: '', price: '', duration_min: 60 } })
@@ -568,11 +572,48 @@ export default function MasterApp() {
         }))
         if (data.work_schedule) setWorkSchedule(data.work_schedule)
         if (data.slot_step_min) setSlotStep(data.slot_step_min)
+        setIsDemo(Boolean(data.is_demo))
       }
     } catch (err) {
       console.error('Fetch profile error:', err)
     }
   }, [isAuthenticated, slug])
+
+  // Счётчик пилота: сколько записей пришло через ссылку мастера
+  const fetchPilotStats = useCallback(async () => {
+    if (!isAuthenticated) return
+    try {
+      const res = await apiFetch(`${API_BASE}/api/app/pilot-stats`)
+      if (res.ok) setPilotStats(await res.json())
+    } catch (err) {
+      console.error('Fetch pilot stats error:', err)
+    }
+  }, [isAuthenticated])
+
+  const handleDemoReset = async () => {
+    setDemoResetting(true)
+    try {
+      const res = await apiFetch(`${API_BASE}/api/app/demo/reset`, { method: 'POST' })
+      if (!res.ok) throw new Error('Не удалось сбросить демо')
+      await Promise.all([fetchStats(true), fetchClients(), fetchServices(), fetchProfile(), fetchPilotStats()])
+      showToast('Демо-данные восстановлены ✨', 'success')
+    } catch (err) {
+      showToast(err.message, 'error')
+    } finally {
+      setDemoResetting(false)
+    }
+  }
+
+  const copyRefLink = async (ref) => {
+    const link = `${window.location.origin}/c/${slug}?from=${ref}`
+    try {
+      await navigator.clipboard.writeText(link)
+      setRefCopied(ref)
+      setTimeout(() => setRefCopied(''), 1500)
+    } catch {
+      showToast(link, 'info')
+    }
+  }
 
   // Токен истёк или недействителен → показываем вход
   useEffect(() => {
@@ -591,6 +632,7 @@ export default function MasterApp() {
       fetchServices()
       fetchClients()
       fetchProfile()
+      fetchPilotStats()
 
       // Проверяем уведомления при открытии кабинета
       if (notificationPermission === 'granted') {
@@ -807,7 +849,7 @@ export default function MasterApp() {
           client_phone: pick.phone,
           service_name: pick.service,
           datetime_str: datetimeStr,
-          price: 2500,
+          source: 'test',   // тестовые заявки не попадают в счётчик пилота
           message: `Здравствуйте! Запись на ${pick.service}`
         })
       })
@@ -1292,6 +1334,12 @@ export default function MasterApp() {
               <Link to="/" className="text-slate-500 hover:text-slate-800">← На главную</Link>
               <Link to="/register" className="font-bold text-purple-700 hover:text-purple-900">Создать страницу</Link>
             </div>
+            <Link
+              to="/demo"
+              className="block w-full py-2.5 text-center text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl"
+            >
+              Посмотреть демо-кабинет без PIN
+            </Link>
           </form>
         </div>
       </div>
@@ -1429,6 +1477,69 @@ export default function MasterApp() {
             </a>
           </div>
         </header>
+
+        {/* ДЕМО-КАБИНЕТ */}
+        {isDemo && (
+          <div className="mt-4 px-4">
+            <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-3 text-xs text-indigo-900 flex items-center gap-2">
+              <Sparkles className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="font-bold">Демо-кабинет</div>
+                <div className="text-[10px]">Данные тестовые — нажимайте всё. Запишитесь как клиент по ссылке выше и подтвердите заявку здесь.</div>
+              </div>
+              <button
+                onClick={handleDemoReset}
+                disabled={demoResetting}
+                className="text-[10px] font-bold px-2 py-1 rounded bg-indigo-100 hover:bg-indigo-200 text-indigo-700 shrink-0 disabled:opacity-60"
+              >
+                {demoResetting ? 'Сброс…' : 'Сбросить'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* СЧЁТЧИК ПИЛОТА: ЗАПИСИ ЧЕРЕЗ ССЫЛКУ */}
+        {pilotStats && (
+          <div className="mt-4 px-4">
+            <div className="bg-white border border-slate-200 rounded-xl p-3">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-xs font-bold text-slate-700">Записи через вашу ссылку</span>
+                {pilotStats.since && <span className="text-[10px] text-slate-400">с {pilotStats.since}</span>}
+              </div>
+              <div className="grid grid-cols-3 gap-2 mt-2 text-center">
+                <div className="bg-slate-50 rounded-lg py-1.5">
+                  <div className="text-base font-black text-slate-900">{pilotStats.last_7_days}</div>
+                  <div className="text-[10px] text-slate-500">за 7 дней</div>
+                </div>
+                <div className="bg-slate-50 rounded-lg py-1.5">
+                  <div className="text-base font-black text-slate-900">{pilotStats.last_30_days}</div>
+                  <div className="text-[10px] text-slate-500">за 30 дней</div>
+                </div>
+                <div className="bg-slate-50 rounded-lg py-1.5">
+                  <div className="text-base font-black text-slate-900">{pilotStats.visits}</div>
+                  <div className="text-[10px] text-slate-500">пришли</div>
+                </div>
+              </div>
+              {pilotStats.by_ref.length > 0 && (
+                <div className="mt-2 text-[10px] text-slate-500">
+                  Откуда: {pilotStats.by_ref.map(r => `${r.label} ${r.count}`).join(' · ')}
+                </div>
+              )}
+              <div className="mt-2 flex flex-wrap items-center gap-1 text-[10px]">
+                <span className="text-slate-400">Ссылка с меткой:</span>
+                {[['insta', 'Instagram'], ['tg', 'Telegram'], ['max', 'MAX']].map(([ref, label]) => (
+                  <button
+                    key={ref}
+                    onClick={() => copyRefLink(ref)}
+                    className="px-2 py-0.5 rounded-md bg-purple-50 hover:bg-purple-100 text-purple-700 font-bold"
+                  >
+                    {refCopied === ref ? 'Скопировано' : label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* МЯГКОЕ НАПОМИНАНИЕ: УВЕДОМЛЕНИЯ */}
         {notificationPermission !== 'granted' && (
@@ -2298,6 +2409,7 @@ export default function MasterApp() {
                   />
                 </div>
 
+                {!isDemo && (
                 <div>
                   <label className="block text-xs font-bold text-slate-600 uppercase mb-1">
                     Новый PIN-код
@@ -2313,6 +2425,7 @@ export default function MasterApp() {
                     className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500"
                   />
                 </div>
+                )}
 
                 <button
                   type="submit"

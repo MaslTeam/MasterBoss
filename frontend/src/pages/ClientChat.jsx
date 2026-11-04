@@ -78,6 +78,23 @@ export default function ClientChat() {
   const { slug = 'anna' } = useParams()
   const storageKey = `masterboss_chat_${slug}`
 
+  // Метка источника из ссылки: /c/anna?from=insta → мастер видит, откуда пришла запись.
+  // Запоминаем её, чтобы метка не терялась при перезагрузке страницы.
+  const [refTag] = useState(() => {
+    const refKey = `mb_ref_${slug}`
+    try {
+      const fromUrl = new URLSearchParams(window.location.search).get('from')
+      const clean = (fromUrl || '').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 20)
+      if (clean) {
+        localStorage.setItem(refKey, clean)
+        return clean
+      }
+      return localStorage.getItem(refKey) || ''
+    } catch {
+      return ''
+    }
+  })
+
   // -------------------------------------------------------------------
   // ВОССТАНОВЛЕНИЕ СОСТОЯНИЯ ИЗ LOCALSTORAGE (ПРИ F5)
   // -------------------------------------------------------------------
@@ -119,6 +136,8 @@ export default function ClientChat() {
 
   // Активный ID бронирования и статус для Live Polling
   const [bookingId, setBookingId] = useState(() => savedState?.bookingId || null)
+  // Секрет записи: без него сервер не покажет статус и не даст отменить
+  const [bookingToken, setBookingToken] = useState(() => savedState?.bookingToken || '')
   const [bookingStatus, setBookingStatus] = useState(() => savedState?.bookingStatus || null) // 'pending' | 'confirmed' | 'cancelled'
   const [canCancel, setCanCancel] = useState(false)
 
@@ -191,13 +210,14 @@ export default function ClientChat() {
         clientName,
         clientPhone,
         bookingId,
+        bookingToken,
         bookingStatus
       }
       localStorage.setItem(storageKey, JSON.stringify(stateToSave))
     } catch (e) {
       console.warn('LocalStorage save error:', e)
     }
-  }, [storageKey, step, messages, selectedService, selectedDateTime, clientName, clientPhone, bookingId, bookingStatus])
+  }, [storageKey, step, messages, selectedService, selectedDateTime, clientName, clientPhone, bookingId, bookingToken, bookingStatus])
 
   // -------------------------------------------------------------------
   // ЗАГРУЗКА ПРОФИЛЯ МАСТЕРА И АКТУАЛЬНЫХ УСЛУГ (GET /api/master/{slug})
@@ -262,7 +282,7 @@ export default function ClientChat() {
   // =====================================================================
   // PUSH ПОДПИСКА КЛИЕНТА
   // =====================================================================
-  const subscribeToPush = useCallback(async (slugValue, bookingIdValue = null) => {
+  const subscribeToPush = useCallback(async (slugValue, bookingIdValue = null, bookingTokenValue = null) => {
     const vapidKey = import.meta.env.VITE_VAPID_PUBLIC_KEY
     if (!vapidKey) {
       console.warn('VAPID public key not configured in VITE_VAPID_PUBLIC_KEY')
@@ -286,7 +306,7 @@ export default function ClientChat() {
         auth: arrayToBase64(subscription.getKey('auth')),
         user_agent: navigator.userAgent,
         // Привязка подписки к записи: сервер узнаёт клиента и шлёт ему адресные напоминания
-        ...(bookingIdValue ? { booking_id: bookingIdValue } : {})
+        ...(bookingIdValue ? { booking_id: bookingIdValue, booking_token: bookingTokenValue } : {})
       }
 
       const res = await fetch(`${API_BASE}/api/app/notifications/push-subscribe`, {
@@ -414,7 +434,7 @@ export default function ClientChat() {
 
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/booking/${bookingId}/status`)
+        const res = await fetch(`${API_BASE}/api/booking/${bookingId}/status?token=${encodeURIComponent(bookingToken)}`)
         if (!res.ok) return
         const data = await res.json()
         
@@ -485,7 +505,7 @@ export default function ClientChat() {
     }, 2000)
 
     return () => clearInterval(interval)
-  }, [bookingId, bookingStatus, master?.name, fetchAvailableSlots])
+  }, [bookingId, bookingToken, bookingStatus, master?.name, fetchAvailableSlots])
 
   // ===================================================================
   // ОБРАБОТЧИКИ ШАГОВ
@@ -647,6 +667,8 @@ export default function ClientChat() {
 
       const payload = {
         slug,
+        source: 'link',
+        ...(refTag ? { ref: refTag } : {}),
         ...(pushEndpoint ? { push_endpoint: pushEndpoint } : {}),
         client_name: clientName.trim(),
         client_phone: clientPhone.trim(),
@@ -680,9 +702,10 @@ export default function ClientChat() {
       const newBookingId = data.booking_id || data.details?.booking_id
 
       setBookingId(newBookingId)
+      setBookingToken(data.client_token || '')
       setBookingStatus('pending')
       if (newBookingId && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-        subscribeToPush(slug, newBookingId)
+        subscribeToPush(slug, newBookingId, data.client_token)
       }
       setStep(6)
 
@@ -717,6 +740,7 @@ export default function ClientChat() {
     setSubmitError(null)
     setSlotConflict(false)
     setBookingId(null)
+    setBookingToken('')
     setBookingStatus(null)
     setWaitlistSlots(new Set())
     setShowWaitlistModal(false)
@@ -1091,7 +1115,7 @@ export default function ClientChat() {
                           onClick={async () => {
                             if (!window.confirm('Вы точно хотите отменить запись?')) return
                             try {
-                              const res = await fetch(`${API_BASE}/api/booking/${msg.bookingId}/cancel-by-client`, { method: 'POST' })
+                              const res = await fetch(`${API_BASE}/api/booking/${msg.bookingId}/cancel-by-client?token=${encodeURIComponent(bookingToken)}`, { method: 'POST' })
                               const data = await res.json().catch(() => ({}))
                               if (!res.ok) {
                                 throw new Error(data.detail || 'Не удалось отменить запись')
