@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 load_dotenv()
 
-from fastapi import FastAPI, Depends, HTTPException, Query, status
+from fastapi import FastAPI, Depends, HTTPException, Query, Request, status
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -40,6 +40,8 @@ from schemas import (
     MasterProfileUpdate,
     LoginRequest,
     LoginResponse,
+    RegisterRequest,
+    WorkScheduleUpdate,
     ClientResponse,
     AIExpenseRequest,
     AIExpenseResponse,
@@ -59,6 +61,8 @@ from schemas import (
     CareCardResponse
 )
 import ai_parser
+import auth
+from auth import auth_slug, auth_master_id
 
 # Автоматическое создание таблиц, если они еще не существуют
 Base.metadata.create_all(bind=engine)
@@ -71,6 +75,9 @@ def _ensure_sqlite_columns():
     required = {
         "bookings": {"visited_at": "DATETIME"},
         "transactions": {"source": "VARCHAR(20)", "booking_id": "INTEGER"},
+        "masters": {"work_schedule": "VARCHAR(500)", "slot_step_min": "INTEGER", "created_at": "DATETIME"},
+        "clients": {"return_push_at": "DATETIME"},
+        "push_subscriptions": {"client_id": "INTEGER"},
     }
     inspector = inspect(engine)
     with engine.begin() as conn:
@@ -124,8 +131,11 @@ _init_default_data()
 app = FastAPI(
     title="МастерБосс API",
     description="REST API бэкенд для сервиса МастерБосс (Web-PWA для частных мастеров)",
-    version="1.1.0"
+    version="1.2.0"
 )
+
+# Проверка токена для всех /api/app/* (кроме публичных адресов клиентской страницы)
+app.middleware("http")(auth.auth_middleware)
 
 # =====================================================================
 # VAPID НАСТРОЙКИ ДЛЯ PUSH API
@@ -300,6 +310,106 @@ def booking_visit_time(booking: Booking) -> Optional[datetime]:
     return parsed
 
 
+# =====================================================================
+# РАБОЧЕЕ РАСПИСАНИЕ МАСТЕРА И СВОБОДНЫЕ ОКНА
+# =====================================================================
+WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+DEFAULT_WORK_SCHEDULE = {d: ["10:00", "20:00"] for d in WEEKDAYS[:6]}
+DEFAULT_WORK_SCHEDULE["sun"] = None
+DEFAULT_DURATION_MIN = 60
+SLOT_DAYS_AHEAD = 14
+
+
+def get_work_schedule(master: Master) -> dict:
+    """Расписание мастера; если не задано — пн–сб 10:00–20:00, воскресенье выходной."""
+    try:
+        data = json.loads(master.work_schedule) if master.work_schedule else None
+    except (ValueError, TypeError):
+        data = None
+    if not isinstance(data, dict):
+        return dict(DEFAULT_WORK_SCHEDULE)
+    return {d: data.get(d) for d in WEEKDAYS}
+
+
+def _to_minutes(hhmm: str) -> int:
+    h, m = hhmm.split(":")
+    return int(h) * 60 + int(m)
+
+
+def validate_work_schedule(schedule: dict) -> dict:
+    """Проверяет и нормализует расписание. Бросает HTTPException с понятным текстом."""
+    clean = {}
+    for day in WEEKDAYS:
+        value = schedule.get(day)
+        if not value:
+            clean[day] = None
+            continue
+        if not isinstance(value, list) or len(value) != 2:
+            raise HTTPException(status_code=400, detail=f"{day}: нужно время начала и конца")
+        start, end = value
+        if not (re.fullmatch(r"\d{2}:\d{2}", start or "") and re.fullmatch(r"\d{2}:\d{2}", end or "")):
+            raise HTTPException(status_code=400, detail=f"{day}: время в формате ЧЧ:ММ")
+        if _to_minutes(start) >= _to_minutes(end):
+            raise HTTPException(status_code=400, detail=f"{day}: начало должно быть раньше конца")
+        clean[day] = [start, end]
+    if not any(clean.values()):
+        raise HTTPException(status_code=400, detail="Нужен хотя бы один рабочий день")
+    return clean
+
+
+def booking_duration(db: Session, booking: Booking) -> int:
+    """Длительность записи по прайсу (по названию услуги), иначе 60 минут."""
+    service = (
+        db.query(Service)
+        .filter(Service.master_id == booking.master_id, Service.name == booking.service_name)
+        .first()
+    )
+    return service.duration_min if service and service.duration_min else DEFAULT_DURATION_MIN
+
+
+def busy_intervals(db: Session, master_id: int) -> list:
+    """Занятые интервалы [начало, конец) по ожидающим и подтверждённым записям."""
+    result = []
+    active = db.query(Booking).filter(
+        Booking.master_id == master_id,
+        Booking.status.in_(["pending", "confirmed"])
+    ).all()
+    for b in active:
+        start = booking_visit_time(b)
+        if start:
+            result.append((start, start + timedelta(minutes=booking_duration(db, b))))
+    return result
+
+
+def is_slot_free(start: datetime, duration_min: int, busy: list) -> bool:
+    end = start + timedelta(minutes=duration_min)
+    return all(end <= b_start or start >= b_end for b_start, b_end in busy)
+
+
+def generate_free_slots(db: Session, master: Master, duration_min: int) -> list:
+    """Свободные окна на SLOT_DAYS_AHEAD дней по рабочему расписанию:
+    процедура целиком помещается в рабочие часы и не пересекается с другими записями."""
+    schedule = get_work_schedule(master)
+    step = master.slot_step_min or 60
+    busy = busy_intervals(db, master.id)
+    now = datetime.now()
+    slots = []
+    for offset in range(0, SLOT_DAYS_AHEAD):
+        day = (now + timedelta(days=offset)).date()
+        hours = schedule.get(WEEKDAYS[day.weekday()])
+        if not hours:
+            continue
+        day_start = datetime.combine(day, datetime.min.time()) + timedelta(minutes=_to_minutes(hours[0]))
+        day_end = datetime.combine(day, datetime.min.time()) + timedelta(minutes=_to_minutes(hours[1]))
+        t = day_start
+        while t + timedelta(minutes=duration_min) <= day_end:
+            # сегодня — только окна минимум через час
+            if t >= now + timedelta(hours=1) and is_slot_free(t, duration_min, busy):
+                slots.append(t.strftime("%d.%m, %H:%M"))
+            t += timedelta(minutes=step)
+    return slots
+
+
 def find_master_service(db: Session, master_id: int, service_id: Optional[int], service_name: str) -> Optional[Service]:
     """Ищет АКТИВНУЮ услугу мастера: сначала по id, затем по точному названию,
     затем по частичному совпадению («педикюр» → «Педикюр с покрытием»)."""
@@ -357,7 +467,7 @@ def health_check():
     return {
         "status": "ok",
         "service": "MasterBoss Backend API",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "timezone": time.strftime("%Z"),
     }
@@ -379,7 +489,7 @@ def root():
     return {
         "status": "ok",
         "service": "MasterBoss Backend API",
-        "version": "1.1.0"
+        "version": "1.2.0"
     }
 
 
@@ -430,22 +540,116 @@ def login_master(payload: LoginRequest, db: Session = Depends(get_db)):
     При успехе возвращает { success: True, token: f'master_token_{master.id}' }.
     Иначе 401 Unauthorized.
     """
-    master = db.query(Master).filter(Master.slug == payload.slug).first()
-    if not master:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Мастер со слагом '{payload.slug}' не найден"
-        )
+    slug = (payload.slug or "").strip().lower()
+    if _login_blocked(slug):
+        raise HTTPException(status_code=429, detail="Слишком много попыток. Подождите 10 минут")
 
-    if master.pin_code != payload.pin:
+    master = db.query(Master).filter(Master.slug == slug).first()
+    # Одинаковый ответ для «нет мастера» и «неверный PIN» — не подсказываем, какие адреса заняты
+    if not master or not auth.verify_pin(payload.pin.strip(), master.pin_code):
+        _login_failed(slug)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Неверный PIN-код"
+            detail="Неверный адрес страницы или PIN-код"
         )
+
+    # Старые PIN в открытом виде при первом входе превращаются в хэш
+    if not auth.is_hashed(master.pin_code):
+        master.pin_code = auth.hash_pin(payload.pin.strip())
+        db.commit()
+
+    _LOGIN_FAILS.pop(slug, None)
+    return LoginResponse(
+        success=True,
+        token=auth.create_token(master.id, master.slug),
+        slug=master.slug,
+        name=master.name
+    )
+
+
+# Простая защита от перебора PIN: не больше 5 ошибок за 10 минут на один адрес
+_LOGIN_FAILS: dict[str, list[float]] = {}
+
+
+def _login_blocked(slug: str) -> bool:
+    now = time.time()
+    attempts = [t for t in _LOGIN_FAILS.get(slug, []) if now - t < 600]
+    _LOGIN_FAILS[slug] = attempts
+    return len(attempts) >= 5
+
+
+def _login_failed(slug: str):
+    _LOGIN_FAILS.setdefault(slug, []).append(time.time())
+
+
+# Стартовые услуги по нише: мастер правит их в настройках
+STARTER_SERVICES = {
+    "Маникюр": [
+        ("Маникюр с покрытием", 2500, 90), ("Снятие + укрепление", 2800, 120),
+        ("Педикюр с покрытием", 3200, 90), ("Экспресс-маникюр", 1800, 45),
+    ],
+    "Брови и ресницы": [
+        ("Коррекция и окрашивание бровей", 1500, 45), ("Ламинирование бровей", 2500, 60),
+        ("Ламинирование ресниц", 2800, 75), ("Наращивание ресниц", 3500, 120),
+    ],
+    "Массаж": [
+        ("Классический массаж спины", 2000, 45), ("Общий массаж", 3500, 90),
+        ("Антицеллюлитный массаж", 3000, 60), ("Массаж лица", 2000, 40),
+    ],
+    "Репетитор": [
+        ("Пробное занятие", 500, 30), ("Занятие 60 минут", 1500, 60),
+        ("Занятие 90 минут", 2100, 90), ("Подготовка к экзамену", 2000, 90),
+    ],
+    "Автосервис": [
+        ("Диагностика", 1500, 60), ("Замена масла", 1200, 45),
+        ("Шиномонтаж (4 колеса)", 2500, 60), ("Компьютерная диагностика", 2000, 60),
+    ],
+}
+DEFAULT_STARTER = [("Консультация", 1000, 30), ("Услуга 60 минут", 2000, 60), ("Услуга 90 минут", 3000, 90)]
+
+
+@app.post(
+    "/api/app/register",
+    response_model=LoginResponse,
+    tags=["Auth"],
+    summary="Регистрация мастера: страница записи, стартовые услуги, вход"
+)
+def register_master(payload: RegisterRequest, db: Session = Depends(get_db)):
+    slug = payload.slug.strip().lower()
+    slug_error = auth.validate_slug(slug)
+    if slug_error:
+        raise HTTPException(status_code=400, detail=slug_error)
+    pin_error = auth.validate_pin_format(payload.pin.strip())
+    if pin_error:
+        raise HTTPException(status_code=400, detail=pin_error)
+    if db.query(Master).filter(Master.slug == slug).first():
+        raise HTTPException(status_code=409, detail="Этот адрес уже занят. Попробуйте добавить город или цифру")
+
+    niche = payload.niche.strip()
+    master = Master(
+        name=payload.name.strip(),
+        slug=slug,
+        niche=niche,
+        trial_active=True,
+        default_deposit=500,
+        pin_code=auth.hash_pin(payload.pin.strip()),
+        work_schedule=json.dumps(DEFAULT_WORK_SCHEDULE),
+        slot_step_min=60,
+        created_at=datetime.now(),
+    )
+    db.add(master)
+    db.commit()
+    db.refresh(master)
+
+    for name, price, duration in STARTER_SERVICES.get(niche, DEFAULT_STARTER):
+        db.add(Service(master_id=master.id, name=name, price=float(price), duration_min=duration, is_active=True))
+    db.commit()
 
     return LoginResponse(
         success=True,
-        token=f"master_token_{master.id}"
+        token=auth.create_token(master.id, master.slug),
+        slug=master.slug,
+        name=master.name
     )
 
 
@@ -459,7 +663,7 @@ def login_master(payload: LoginRequest, db: Session = Depends(get_db)):
     summary="Получить профиль мастера для личного кабинета (включая текущий PIN-код)"
 )
 def get_master_profile(
-    slug: str = Query("anna", description="Slug мастера"),
+    slug: str = Depends(auth_slug),
     db: Session = Depends(get_db)
 ):
     """Возвращает данные мастера, включая PIN-код, для отображения и редактирования в настройках"""
@@ -474,9 +678,10 @@ def get_master_profile(
         "name": master.name,
         "slug": master.slug,
         "niche": master.niche,
-        "pin_code": master.pin_code,
         "default_deposit": master.default_deposit,
-        "trial_active": master.trial_active
+        "trial_active": master.trial_active,
+        "work_schedule": get_work_schedule(master),
+        "slot_step_min": master.slot_step_min or 60,
     }
 
 
@@ -487,7 +692,7 @@ def get_master_profile(
 )
 def update_master_profile(
     payload: MasterProfileUpdate,
-    slug: str = Query("anna", description="Slug мастера"),
+    slug: str = Depends(auth_slug),
     db: Session = Depends(get_db)
 ):
     """Обновляет имя мастера, нишу и pin_code"""
@@ -503,7 +708,10 @@ def update_master_profile(
     if payload.niche is not None and payload.niche.strip():
         master.niche = payload.niche.strip()
     if payload.pin_code is not None and payload.pin_code.strip():
-        master.pin_code = payload.pin_code.strip()
+        pin_error = auth.validate_pin_format(payload.pin_code.strip())
+        if pin_error:
+            raise HTTPException(status_code=400, detail=pin_error)
+        master.pin_code = auth.hash_pin(payload.pin_code.strip())
 
     db.commit()
     db.refresh(master)
@@ -513,12 +721,27 @@ def update_master_profile(
         "id": master.id,
         "name": master.name,
         "slug": master.slug,
-        "niche": master.niche,
-        "pin_code": master.pin_code
+        "niche": master.niche
     }
 
 
 
+
+
+@app.put(
+    "/api/app/schedule",
+    tags=["Profile"],
+    summary="Сохранить рабочие дни, часы и шаг записи"
+)
+def update_work_schedule(payload: WorkScheduleUpdate, slug: str = Depends(auth_slug), db: Session = Depends(get_db)):
+    master = db.query(Master).filter(Master.slug == slug).first()
+    if not master:
+        raise HTTPException(status_code=404, detail="Мастер не найден")
+    clean = validate_work_schedule(payload.schedule)
+    master.work_schedule = json.dumps(clean)
+    master.slot_step_min = payload.slot_step_min
+    db.commit()
+    return {"success": True, "work_schedule": clean, "slot_step_min": master.slot_step_min}
 
 
 @app.put(
@@ -528,7 +751,7 @@ def update_master_profile(
 )
 def change_master_pin(
     payload: ChangePinRequest,
-    slug: str = Query("anna", description="Slug мастера"),
+    slug: str = Depends(auth_slug),
     db: Session = Depends(get_db)
 ):
     """Специальный защищенный эндпоинт для смены PIN-кода"""
@@ -539,28 +762,21 @@ def change_master_pin(
             detail=f"Мастер со слагом '{slug}' не найден"
         )
 
-    if payload.old_pin and master.pin_code != payload.old_pin.strip():
+    if not payload.old_pin or not auth.verify_pin(payload.old_pin.strip(), master.pin_code):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Текущий PIN-код указан неверно"
         )
 
     new_pin_clean = payload.new_pin.strip()
-    if len(new_pin_clean) < 4:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="PIN-код должен содержать минимум 4 цифры"
-        )
+    pin_error = auth.validate_pin_format(new_pin_clean)
+    if pin_error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=pin_error)
 
-    master.pin_code = new_pin_clean
+    master.pin_code = auth.hash_pin(new_pin_clean)
     db.commit()
-    db.refresh(master)
 
-    return {
-        "success": True,
-        "message": "PIN-код успешно обновлен",
-        "pin_code": master.pin_code
-    }
+    return {"success": True, "message": "PIN-код успешно обновлен"}
 
 
 @app.get(
@@ -569,7 +785,7 @@ def change_master_pin(
     tags=["Services"],
     summary="Получить все услуги мастера (включая неактивные)"
 )
-def get_all_services(slug: str = Query("anna"), db: Session = Depends(get_db)):
+def get_all_services(slug: str = Depends(auth_slug), db: Session = Depends(get_db)):
     """Возвращает все услуги мастера для управления в настройках кабинета"""
     master = db.query(Master).filter(Master.slug == slug).first()
     if not master:
@@ -588,7 +804,7 @@ def get_all_services(slug: str = Query("anna"), db: Session = Depends(get_db)):
 )
 def create_service(
     service_in: ServiceCreate,
-    slug: str = Query("anna"),
+    slug: str = Depends(auth_slug),
     db: Session = Depends(get_db)
 ):
     """Создает новую услугу { name, price, duration_min }"""
@@ -621,7 +837,7 @@ def create_service(
 def update_service(
     service_id: int,
     service_in: ServiceUpdate,
-    slug: str = Query("anna"),
+    slug: str = Depends(auth_slug),
     db: Session = Depends(get_db)
 ):
     """Редактирует название, цену, тайминг или активность услуги"""
@@ -660,7 +876,7 @@ def update_service(
 )
 def deactivate_service(
     service_id: int,
-    slug: str = Query("anna"),
+    slug: str = Depends(auth_slug),
     db: Session = Depends(get_db)
 ):
     """Деактивирует услугу (is_active = False)"""
@@ -693,13 +909,16 @@ def deactivate_service(
     tags=["Slots"],
     summary="Динамическая генерация свободных слотов на 3 дня вперед"
 )
-def get_available_slots(slug: str, db: Session = Depends(get_db)):
+def get_available_slots(
+    slug: str,
+    service_id: Optional[int] = Query(None, description="Услуга: окна считаются по её длительности"),
+    db: Session = Depends(get_db)
+):
     """
-    Генерирует временные окна на 3 дня вперед (Завтра, Послезавтра, Через 2 дня)
-    с шагом: 10:00, 12:30, 15:00, 17:30, 19:30.
-    Проверяет в таблице Booking активные брони со статусами 'pending' и 'confirmed'.
-    Исключает занятые слоты и возвращает только свободные строки времени:
-    ["Завтра, 10:00", "Завтра, 15:00", ...]
+    Свободные окна на 14 дней вперёд по рабочему расписанию мастера.
+    Окно попадает в список, только если процедура целиком помещается в рабочие часы
+    и не пересекается с ожидающими и подтверждёнными записями.
+    Формат: ["05.11, 10:00", "05.11, 11:00", ...]
     """
     master = db.query(Master).filter(Master.slug == slug).first()
     if not master:
@@ -707,36 +926,12 @@ def get_available_slots(slug: str, db: Session = Depends(get_db)):
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Мастер со слагом '{slug}' не найден"
         )
-
-    # Генерируем даты на 7 дней вперед
-    days_list = []
-    base_date = datetime.now()
-    for i in range(1, 8):
-        days_list.append((base_date + timedelta(days=i)).strftime("%d.%m"))
-    
-    time_steps = ["10:00", "12:30", "15:00", "17:30", "19:30"]
-
-    all_slots = [f"{day}, {t}" for day in days_list for t in time_steps]
-
-    # Активные брони мастера
-    active_bookings = (
-        db.query(Booking)
-        .filter(
-            Booking.master_id == master.id,
-            Booking.status.in_(["pending", "confirmed"])
-        )
-        .all()
-    )
-
-    booked_slots = set()
-    for b in active_bookings:
-        key = slot_key(b.datetime_str)
-        if key:
-            booked_slots.add(key)
-
-    # Возвращаем только свободные слоты
-    available = [slot for slot in all_slots if slot not in booked_slots]
-    return available
+    duration = DEFAULT_DURATION_MIN
+    if service_id:
+        service = db.query(Service).filter(Service.id == service_id, Service.master_id == master.id).first()
+        if service and service.duration_min:
+            duration = service.duration_min
+    return generate_free_slots(db, master, duration)
 
 
 @app.get(
@@ -778,7 +973,7 @@ def get_booking_status(booking_id: int, db: Session = Depends(get_db)):
     tags=["App"],
     summary="Сводная статистика мастера: доходы, расходы, прибыль, налог, записи и транзакции"
 )
-def get_master_stats(slug: str = Query("anna", description="Slug мастера"), db: Session = Depends(get_db)):
+def get_master_stats(slug: str = Depends(auth_slug), db: Session = Depends(get_db)):
     master = db.query(Master).filter(Master.slug == slug).first()
     if not master:
         raise HTTPException(
@@ -848,9 +1043,9 @@ def get_master_stats(slug: str = Query("anna", description="Slug мастера"
     tags=["Bookings"],
     summary="Подтвердить бронь клиента в 1 клик"
 )
-def confirm_booking(booking_id: int, db: Session = Depends(get_db)):
+def confirm_booking(booking_id: int, master_id: int = Depends(auth_master_id), db: Session = Depends(get_db)):
     """Переводит статус брони в 'confirmed'"""
-    booking = db.query(Booking).filter(Booking.id == booking_id).first()
+    booking = db.query(Booking).filter(Booking.id == booking_id, Booking.master_id == master_id).first()
     if not booking:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -916,8 +1111,8 @@ def cancel_booking_by_client(booking_id: int, db: Session = Depends(get_db)):
     tags=["App"],
     summary="Закрыть алерт об отмене записи мастером"
 )
-def mark_cancellation_read(booking_id: int, db: Session = Depends(get_db)):
-    booking = db.query(Booking).filter(Booking.id == booking_id).first()
+def mark_cancellation_read(booking_id: int, master_id: int = Depends(auth_master_id), db: Session = Depends(get_db)):
+    booking = db.query(Booking).filter(Booking.id == booking_id, Booking.master_id == master_id).first()
     if not booking:
         raise HTTPException(status_code=404, detail="Запись не найдена")
     
@@ -934,7 +1129,7 @@ def mark_cancellation_read(booking_id: int, db: Session = Depends(get_db)):
 )
 def create_transaction(
     transaction_in: TransactionCreate,
-    slug: str = Query("anna", description="Slug мастера"),
+    slug: str = Depends(auth_slug),
     db: Session = Depends(get_db)
 ):
     master = db.query(Master).filter(Master.slug == slug).first()
@@ -994,7 +1189,7 @@ def _check_visit_time(booking: Booking):
     tags=["Bookings"],
     summary="Клиент пришёл: статус completed + автоматический доход"
 )
-def mark_booking_visited(booking_id: int, slug: str = Query("anna"), db: Session = Depends(get_db)):
+def mark_booking_visited(booking_id: int, slug: str = Depends(auth_slug), db: Session = Depends(get_db)):
     """Переводит запись в 'completed', ставит клиенту дату визита и создаёт доход
     по цене записи. Повторное нажатие не создаёт второй доход."""
     master = _get_master_or_404(db, slug)
@@ -1031,7 +1226,7 @@ def mark_booking_visited(booking_id: int, slug: str = Query("anna"), db: Session
     tags=["Bookings"],
     summary="Клиент не пришёл: статус no_show, доход по визиту удаляется"
 )
-def mark_booking_no_show(booking_id: int, slug: str = Query("anna"), db: Session = Depends(get_db)):
+def mark_booking_no_show(booking_id: int, slug: str = Depends(auth_slug), db: Session = Depends(get_db)):
     """Переводит запись в 'no_show'. Если до этого по ошибке нажали «Пришла»,
     созданный доход удаляется."""
     master = _get_master_or_404(db, slug)
@@ -1056,7 +1251,7 @@ def mark_booking_no_show(booking_id: int, slug: str = Query("anna"), db: Session
 def update_transaction(
     transaction_id: int,
     payload: TransactionUpdate,
-    slug: str = Query("anna"),
+    slug: str = Depends(auth_slug),
     db: Session = Depends(get_db)
 ):
     master = _get_master_or_404(db, slug)
@@ -1077,7 +1272,7 @@ def update_transaction(
     tags=["Transactions"],
     summary="Удалить операцию"
 )
-def delete_transaction(transaction_id: int, slug: str = Query("anna"), db: Session = Depends(get_db)):
+def delete_transaction(transaction_id: int, slug: str = Depends(auth_slug), db: Session = Depends(get_db)):
     master = _get_master_or_404(db, slug)
     tx = db.query(Transaction).filter(Transaction.id == transaction_id, Transaction.master_id == master.id).first()
     if not tx:
@@ -1097,7 +1292,7 @@ def delete_transaction(transaction_id: int, slug: str = Query("anna"), db: Sessi
     tags=["Clients"],
     summary="Список клиентов мастера с историей посещений и статусом возврата"
 )
-def get_master_clients(slug: str = Query("anna"), db: Session = Depends(get_db)):
+def get_master_clients(slug: str = Depends(auth_slug), db: Session = Depends(get_db)):
     """Возвращает клиентов мастера с расчетом дней после последнего визита"""
     master = db.query(Master).filter(Master.slug == slug).first()
     if not master:
@@ -1167,14 +1362,16 @@ def parse_expense_with_ai(payload: AIExpenseRequest):
     tags=["AI"],
     summary="Генерация продающего напоминания клиенту через GigaChat"
 )
-def generate_reminder_with_ai(payload: AIReminderRequest, db: Session = Depends(get_db)):
+def generate_reminder_with_ai(payload: AIReminderRequest, master_id: int = Depends(auth_master_id), db: Session = Depends(get_db)):
     """
     Генерирует персональный текст сообщения для WhatsApp/SMS,
     приглашающий постоянного клиента обновить покрытие.
     """
-    client = db.query(Client).filter(Client.id == payload.client_id).first()
-    phone = client.phone if client else None
-    master = client.master if client else None
+    client = db.query(Client).filter(Client.id == payload.client_id, Client.master_id == master_id).first()
+    if not client:
+        raise HTTPException(status_code=404, detail="Клиент не найден")
+    phone = client.phone
+    master = client.master
     master_slug = master.slug if master else "anna"
     # PUBLIC_URL (например https://masterboss.onrender.com) делает ссылку кликабельной в мессенджере
     booking_url = f"{os.getenv('PUBLIC_URL', '').rstrip('/')}/c/{master_slug}"
@@ -1295,7 +1492,10 @@ def handle_chat_message(payload: ChatMessageRequest, db: Session = Depends(get_d
         None
     )
 
-    if existing_booking:
+    if existing_booking or (
+        scheduled_at and not is_slot_free(scheduled_at, service.duration_min or DEFAULT_DURATION_MIN,
+                                          busy_intervals(db, master.id))
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Слот уже забронирован"
@@ -1338,6 +1538,14 @@ def handle_chat_message(payload: ChatMessageRequest, db: Session = Depends(get_d
     db.commit()
     db.refresh(new_booking)
 
+    # Пуш-подписка этого браузера теперь принадлежит этому клиенту
+    if payload.push_endpoint:
+        db.query(PushSubscription).filter(
+            PushSubscription.slug == f"client_{master.slug}",
+            PushSubscription.endpoint == payload.push_endpoint
+        ).update({"client_id": client.id})
+        db.commit()
+
     reply_text = f"{name}, заявка на {service_name.lower()} на {datetime_str} зафиксирована! Передала мастеру на сверку с бумажным блокнотом."
 
     return ChatMessageResponse(
@@ -1366,8 +1574,9 @@ def handle_chat_message(payload: ChatMessageRequest, db: Session = Depends(get_d
     tags=["Notifications"],
     summary="Сохранить подписку на push-уведомления браузера"
 )
-def subscribe_notifications(payload: PushSubscriptionCreate, db: Session = Depends(get_db)):
-    """Сохраняет подписку браузера на уведомления (endpoint, ключи шифрования)"""
+def subscribe_notifications(payload: PushSubscriptionCreate, slug: str = Depends(auth_slug), db: Session = Depends(get_db)):
+    """Сохраняет подписку браузера мастера на уведомления (endpoint, ключи шифрования)"""
+    payload.slug = slug
     existing = db.query(PushSubscription).filter(
         PushSubscription.slug == payload.slug,
         PushSubscription.endpoint == payload.endpoint
@@ -1393,8 +1602,10 @@ def subscribe_notifications(payload: PushSubscriptionCreate, db: Session = Depen
     tags=["Notifications"],
     summary="Отправить уведомление в браузер получателю"
 )
-def send_notification(payload: NotificationSend, db: Session = Depends(get_db)):
+def send_notification(payload: NotificationSend, slug: str = Depends(auth_slug), db: Session = Depends(get_db)):
     """Возвращает список подписок для frontend, который покажет уведомление через Notification API"""
+    if payload.slug not in (slug, f"client_{slug}"):
+        raise HTTPException(status_code=403, detail="Можно отправлять только своим подписчикам")
     subs = db.query(PushSubscription).filter(PushSubscription.slug == payload.slug).all()
     if not subs:
         return {"success": False, "message": f"Нет активных подписок для '{payload.slug}'", "count": 0}
@@ -1417,7 +1628,7 @@ def send_notification(payload: NotificationSend, db: Session = Depends(get_db)):
     tags=["Notifications"],
     summary="Записи на ближайший час (для напоминаний)"
 )
-def get_upcoming_bookings(slug: str = Query("anna"), db: Session = Depends(get_db)):
+def get_upcoming_bookings(slug: str = Depends(auth_slug), db: Session = Depends(get_db)):
     """Возвращает брони, которые начнутся в ближайшие 60 минут"""
     master = db.query(Master).filter(Master.slug == slug).first()
     if not master:
@@ -1459,7 +1670,7 @@ def get_upcoming_bookings(slug: str = Query("anna"), db: Session = Depends(get_d
     tags=["Notifications"],
     summary="Клиенты, которым пора возвращаться (для уведомлений)"
 )
-def get_clients_due_return(slug: str = Query("anna"), db: Session = Depends(get_db)):
+def get_clients_due_return(slug: str = Depends(auth_slug), db: Session = Depends(get_db)):
     """Возвращает клиентов, у которых прошло более cycle_days дней с последнего визита"""
     master = db.query(Master).filter(Master.slug == slug).first()
     if not master:
@@ -1491,13 +1702,31 @@ def get_clients_due_return(slug: str = Query("anna"), db: Session = Depends(get_
     tags=["Notifications"],
     summary="Оформить push-подписку браузера (VAPID)"
 )
-def push_subscribe(payload: PushSubscriptionCreate, db: Session = Depends(get_db)):
-    """Сохраняет push-подписку браузера с ключами шифрования для отправки уведомлений даже при закрытой вкладке"""
+def push_subscribe(payload: PushSubscriptionCreate, request: Request, db: Session = Depends(get_db)):
+    """Сохраняет push-подписку браузера с ключами шифрования для отправки уведомлений даже при закрытой вкладке.
+    Подписка мастера (slug без client_) требует токен. Подписка клиента с booking_id
+    привязывается к этому клиенту — напоминания придут только ему."""
     if not payload.p256dh or not payload.auth:
         raise HTTPException(
             status_code=400,
             detail="Для push-подписки нужны ключи p256dh и auth (от service worker)"
         )
+
+    client_id = None
+    if payload.slug.startswith("client_"):
+        if payload.booking_id:
+            master_slug = payload.slug[len("client_"):]
+            booking = (
+                db.query(Booking).join(Master, Booking.master_id == Master.id)
+                .filter(Booking.id == payload.booking_id, Master.slug == master_slug)
+                .first()
+            )
+            if booking:
+                client_id = booking.client_id
+    else:
+        token = auth.token_from_request(request)
+        if not token or token.get("slug") != payload.slug:
+            raise HTTPException(status_code=401, detail="Подписка мастера доступна только из кабинета")
 
     existing = db.query(PushSubscription).filter(
         PushSubscription.slug == payload.slug,
@@ -1508,6 +1737,8 @@ def push_subscribe(payload: PushSubscriptionCreate, db: Session = Depends(get_db
         existing.p256dh = payload.p256dh
         existing.auth = payload.auth
         existing.user_agent = payload.user_agent
+        if client_id:
+            existing.client_id = client_id
         db.commit()
         return PushSubscriptionResponse(success=True, message="Подписка обновлена")
 
@@ -1516,7 +1747,8 @@ def push_subscribe(payload: PushSubscriptionCreate, db: Session = Depends(get_db
         endpoint=payload.endpoint,
         p256dh=payload.p256dh,
         auth=payload.auth,
-        user_agent=payload.user_agent
+        user_agent=payload.user_agent,
+        client_id=client_id
     )
     db.add(sub)
     db.commit()
@@ -1529,7 +1761,7 @@ def push_subscribe(payload: PushSubscriptionCreate, db: Session = Depends(get_db
     tags=["Notifications"],
     summary="Отправить push-напоминания о записях на ближайший час"
 )
-def push_send_upcoming(slug: str = Query("anna"), db: Session = Depends(get_db)):
+def push_send_upcoming(slug: str = Depends(auth_slug), db: Session = Depends(get_db)):
     """Раз в час проверяет ближайшие записи и отправляет push-уведомления клиентам"""
     master = db.query(Master).filter(Master.slug == slug).first()
     if not master:
@@ -1574,7 +1806,7 @@ def push_send_upcoming(slug: str = Query("anna"), db: Session = Depends(get_db))
     tags=["Notifications"],
     summary="Отправить push-уведомления клиентам, которым пора возвращаться"
 )
-def push_send_clients_due(slug: str = Query("anna"), db: Session = Depends(get_db)):
+def push_send_clients_due(slug: str = Depends(auth_slug), db: Session = Depends(get_db)):
     """Отправляет push-уведомления клиентам с длительным отсутствием"""
     master = db.query(Master).filter(Master.slug == slug).first()
     if not master:
@@ -1702,20 +1934,15 @@ def waitlist_check(slug: str = Query(...), db: Session = Depends(get_db)):
         db.query(WaitlistSubscription)
         .filter(
             WaitlistSubscription.master_id == master.id,
-            WaitlistSubscription.is_notified == False
+            WaitlistSubscription.is_notified == True,
+            WaitlistSubscription.created_at >= datetime.utcnow() - timedelta(days=7)
         )
         .all()
     )
 
-    result = []
-    for sub in subs:
-        result.append({
-            "slot": sub.desired_slot,
-            "client_name": sub.client_name,
-            "client_phone": sub.client_phone
-        })
-
-    return {"slots": result, "count": len(result)}
+    # Только время слотов: имена и телефоны клиентов наружу не отдаём
+    slots = sorted({sub.desired_slot for sub in subs})
+    return {"slots": [{"slot": s} for s in slots], "count": len(slots)}
 
 
 @app.post(
@@ -1724,9 +1951,9 @@ def waitlist_check(slug: str = Query(...), db: Session = Depends(get_db)):
     tags=["Bookings"],
     summary="Отклонить бронь (Занято в блокноте ❌)"
 )
-def reject_booking(booking_id: int, db: Session = Depends(get_db)):
+def reject_booking(booking_id: int, master_id: int = Depends(auth_master_id), db: Session = Depends(get_db)):
     """Переводит статус брони в 'cancelled' и уведомляет подписчиков waitlist"""
-    booking = db.query(Booking).filter(Booking.id == booking_id).first()
+    booking = db.query(Booking).filter(Booking.id == booking_id, Booking.master_id == master_id).first()
     if not booking:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -1755,7 +1982,7 @@ def reject_booking(booking_id: int, db: Session = Depends(get_db)):
     tags=["AI"],
     summary="Бизнес-аудит месяца от GigaChat"
 )
-def business_audit(slug: str = Query("anna", description="Slug мастера"), db: Session = Depends(get_db)):
+def business_audit(slug: str = Depends(auth_slug), db: Session = Depends(get_db)):
     """
     Собирает статистику мастера за текущий месяц и генерирует аудит через GigaChat.
     """
@@ -1825,13 +2052,13 @@ def business_audit(slug: str = Query("anna", description="Slug мастера"),
     tags=["AI"],
     summary="Генерация тактичного ответа клиенту в конфликтной ситуации"
 )
-def conflict_resolver(payload: ConflictResolverRequest, db: Session = Depends(get_db)):
+def conflict_resolver(payload: ConflictResolverRequest, slug: str = Depends(auth_slug), db: Session = Depends(get_db)):
     """
     Генерирует ответ на сообщение клиента в конфликтной ситуации через GigaChat.
     """
-    master = db.query(Master).filter(Master.slug == payload.slug).first()
+    master = db.query(Master).filter(Master.slug == slug).first()
     if not master:
-        raise HTTPException(status_code=404, detail=f"Мастер '{payload.slug}' не найден")
+        raise HTTPException(status_code=404, detail=f"Мастер '{slug}' не найден")
 
     result = ai_parser.generate_conflict_reply(
         scenario_type=payload.scenario_type,
@@ -1847,13 +2074,13 @@ def conflict_resolver(payload: ConflictResolverRequest, db: Session = Depends(ge
     tags=["Bookings", "AI"],
     summary="Отправить памятку по уходу клиенту после визита"
 )
-def send_care_card(booking_id: int, db: Session = Depends(get_db)):
+def send_care_card(booking_id: int, master_id: int = Depends(auth_master_id), db: Session = Depends(get_db)):
     """
     Генерирует памятку по уходу для клиента после завершенного визита.
     """
     booking = (
         db.query(Booking)
-        .filter(Booking.id == booking_id)
+        .filter(Booking.id == booking_id, Booking.master_id == master_id)
         .first()
     )
     if not booking:
@@ -1914,9 +2141,13 @@ def check_and_send_upcoming_reminders():
             if not master:
                 continue
 
+            # Только браузеры этого клиента (раньше уходило всем клиентам мастера)
             subs = (
                 db.query(PushSubscription)
-                .filter(PushSubscription.slug == f"client_{master.slug}")
+                .filter(
+                    PushSubscription.slug == f"client_{master.slug}",
+                    PushSubscription.client_id == b.client_id
+                )
                 .all()
             )
 
@@ -1957,31 +2188,39 @@ def check_and_send_returning_clients():
 
         for master in masters:
             clients = db.query(Client).filter(Client.master_id == master.id).all()
-            subs = (
-                db.query(PushSubscription)
-                .filter(PushSubscription.slug == f"client_{master.slug}")
-                .all()
-            )
-            if not subs:
-                continue
-
             for c in clients:
                 if not c.last_visit_date:
                     continue
+                # Один пуш за цикл: после нового визита отметка сбрасывается сама
+                if c.return_push_at and c.return_push_at >= c.last_visit_date:
+                    continue
                 days_since = (now - c.last_visit_date).days
-                if days_since >= c.cycle_days:
-                    for sub in subs:
-                        if sub.endpoint and sub.p256dh and sub.auth:
-                            send_push_to_subscription(
-                                type("Sub", (), {
-                                    "endpoint": sub.endpoint,
-                                    "p256dh": sub.p256dh,
-                                    "auth": sub.auth,
-                                })(),
-                                title=f"📬 Пора обновить покрытие, {c.name}!",
-                                body=f"Последний визит был {days_since} дней назад (цикл {c.cycle_days} дн.). Записаться онлайн: /c/{master.slug}",
-                                url=f"/c/{master.slug}",
-                            )
+                if days_since < c.cycle_days:
+                    continue
+                subs = (
+                    db.query(PushSubscription)
+                    .filter(
+                        PushSubscription.slug == f"client_{master.slug}",
+                        PushSubscription.client_id == c.id
+                    )
+                    .all()
+                )
+                sent = False
+                for sub in subs:
+                    if sub.endpoint and sub.p256dh and sub.auth:
+                        sent = send_push_to_subscription(
+                            type("Sub", (), {
+                                "endpoint": sub.endpoint,
+                                "p256dh": sub.p256dh,
+                                "auth": sub.auth,
+                            })(),
+                            title=f"Пора на повторный визит, {c.name}!",
+                            body=f"С прошлого визита прошло {days_since} дн. Выберите удобное время: /c/{master.slug}",
+                            url=f"/c/{master.slug}",
+                        ) or sent
+                if subs:
+                    c.return_push_at = now
+        db.commit()
     except Exception as e:
         print(f"[Returning clients scheduler error] {e}")
         db.rollback()

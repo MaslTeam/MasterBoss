@@ -34,7 +34,7 @@ class MasterProfileUpdate(BaseModel):
     """Схема обновления профиля мастера (имя, ниша, pin-код)"""
     name: Optional[str] = Field(default=None, min_length=1, max_length=120)
     niche: Optional[str] = Field(default=None, min_length=1, max_length=100)
-    pin_code: Optional[str] = Field(default=None, min_length=4, max_length=20)
+    pin_code: Optional[str] = Field(default=None, max_length=20, description="Новый PIN; пусто — не менять")
 
 
 class ChangePinRequest(BaseModel):
@@ -53,6 +53,22 @@ class LoginResponse(BaseModel):
     """Схема ответа успешного входа"""
     success: bool
     token: str
+    slug: str
+    name: str
+
+
+class RegisterRequest(BaseModel):
+    """Регистрация нового мастера"""
+    name: str = Field(..., min_length=2, max_length=120, description="Имя или название, как увидят клиенты")
+    niche: str = Field(..., min_length=2, max_length=100, description="Ниша: Маникюр, Брови и ресницы, Массаж, Репетитор, Автосервис, Другое")
+    slug: str = Field(..., min_length=3, max_length=30, description="Адрес страницы записи: /c/<slug>")
+    pin: str = Field(..., min_length=4, max_length=8, description="PIN для входа, 4–8 цифр")
+
+
+class WorkScheduleUpdate(BaseModel):
+    """Рабочие дни и часы. Значение дня — ["10:00", "20:00"] или null (выходной)"""
+    schedule: dict[str, Optional[list[str]]] = Field(..., description='{"mon": ["10:00", "20:00"], ..., "sun": null}')
+    slot_step_min: int = Field(default=60, ge=15, le=240, description="Шаг начала записи, минут")
 
 
 class MasterResponse(BaseModel):
@@ -191,6 +207,7 @@ class ChatMessageRequest(BaseModel):
     client_phone: Optional[str] = Field(default=None, description="Телефон клиента")
     service_name: Optional[str] = Field(default=None, description="Название выбранной услуги")
     datetime_str: Optional[str] = Field(default=None, description="Выбранная дата и время")
+    push_endpoint: Optional[str] = Field(default=None, description="Push-подписка этого браузера: свяжем её с клиентом")
     service_id: Optional[int] = Field(default=None, description="ID услуги из прайса мастера (предпочтительно)")
     price: Optional[float] = Field(default=None, description="Устарело: игнорируется, цена берётся из прайса мастера")
 
@@ -210,6 +227,7 @@ class PushSubscriptionCreate(BaseModel):
     p256dh: Optional[str] = Field(default=None, description="Ключ шифрования p256dh")
     auth: Optional[str] = Field(default=None, description="Ключ шифрования auth")
     user_agent: Optional[str] = Field(default=None, description="User-Agent браузера")
+    booking_id: Optional[int] = Field(default=None, description="Запись клиента — пуши придут только этому клиенту")
 
 
 class PushSubscriptionResponse(BaseModel):
