@@ -54,6 +54,26 @@ function isPhoneValid(phone) {
   return getPhoneDigits(phone).length >= 10
 }
 
+const WEEKDAY_SHORT = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб']
+
+// «05.11» → «чт, 05.11» (и «Сегодня» / «Завтра» для ближайших дней)
+function formatSlotDay(datePart) {
+  const match = /^(\d{2})\.(\d{2})$/.exec(datePart || '')
+  if (!match) return datePart
+  const now = new Date()
+  const day = Number(match[1])
+  const month = Number(match[2]) - 1
+  let year = now.getFullYear()
+  if (month < now.getMonth() - 6) year += 1   // слот в январе, а сейчас декабрь
+  const date = new Date(year, month, day)
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const diff = Math.round((date - today) / 86400000)
+  const weekday = WEEKDAY_SHORT[date.getDay()]
+  if (diff === 0) return `Сегодня, ${weekday} ${datePart}`
+  if (diff === 1) return `Завтра, ${weekday} ${datePart}`
+  return `${weekday}, ${datePart}`
+}
+
 export default function ClientChat() {
   const { slug = 'anna' } = useParams()
   const storageKey = `masterboss_chat_${slug}`
@@ -242,7 +262,7 @@ export default function ClientChat() {
   // =====================================================================
   // PUSH ПОДПИСКА КЛИЕНТА
   // =====================================================================
-  const subscribeToPush = useCallback(async (slugValue) => {
+  const subscribeToPush = useCallback(async (slugValue, bookingIdValue = null) => {
     const vapidKey = import.meta.env.VITE_VAPID_PUBLIC_KEY
     if (!vapidKey) {
       console.warn('VAPID public key not configured in VITE_VAPID_PUBLIC_KEY')
@@ -264,7 +284,9 @@ export default function ClientChat() {
         endpoint: subscription.endpoint,
         p256dh: arrayToBase64(subscription.getKey('p256dh')),
         auth: arrayToBase64(subscription.getKey('auth')),
-        user_agent: navigator.userAgent
+        user_agent: navigator.userAgent,
+        // Привязка подписки к записи: сервер узнаёт клиента и шлёт ему адресные напоминания
+        ...(bookingIdValue ? { booking_id: bookingIdValue } : {})
       }
 
       const res = await fetch(`${API_BASE}/api/app/notifications/push-subscribe`, {
@@ -310,10 +332,14 @@ export default function ClientChat() {
   // -------------------------------------------------------------------
   // ЗАГРУЗКА СВОБОДНЫХ СЛОТОВ (GET /api/master/{slug}/available-slots)
   // -------------------------------------------------------------------
+  // Слоты зависят от длительности выбранной услуги
+  const selectedServiceId = selectedService?.id || null
+
   const fetchAvailableSlots = useCallback(async () => {
     setLoadingSlots(true)
     try {
-      const res = await fetch(`${API_BASE}/api/master/${slug}/available-slots`)
+      const serviceQuery = selectedServiceId ? `?service_id=${selectedServiceId}` : ''
+      const res = await fetch(`${API_BASE}/api/master/${slug}/available-slots${serviceQuery}`)
       if (res.ok) {
         const slots = await res.json()
         setAvailableSlots(slots)
@@ -323,7 +349,7 @@ export default function ClientChat() {
     } finally {
       setLoadingSlots(false)
     }
-  }, [slug])
+  }, [slug, selectedServiceId])
 
   useEffect(() => {
     // Подгружаем слоты на старте и при переходе на шаг 2
@@ -589,7 +615,8 @@ export default function ClientChat() {
 
     // Предварительная проверка: слот всё ещё свободен?
     try {
-      const slotsRes = await fetch(`${API_BASE}/api/master/${slug}/available-slots`)
+      const serviceQuery = selectedService?.id ? `?service_id=${selectedService.id}` : ''
+      const slotsRes = await fetch(`${API_BASE}/api/master/${slug}/available-slots${serviceQuery}`)
       if (slotsRes.ok) {
         const freshSlots = await slotsRes.json()
         if (!freshSlots.includes(selectedDateTime.trim())) {
@@ -607,8 +634,20 @@ export default function ClientChat() {
     setSubmitError(null)
 
     try {
+      // Если клиент уже разрешил уведомления — передаём адрес подписки,
+      // чтобы напоминание о визите пришло именно ему
+      let pushEndpoint = null
+      try {
+        if ('serviceWorker' in navigator && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+          const registration = await navigator.serviceWorker.ready
+          const sub = await registration.pushManager.getSubscription()
+          pushEndpoint = sub?.endpoint || null
+        }
+      } catch { /* push недоступен — запись всё равно создаём */ }
+
       const payload = {
         slug,
+        ...(pushEndpoint ? { push_endpoint: pushEndpoint } : {}),
         client_name: clientName.trim(),
         client_phone: clientPhone.trim(),
         service_id: selectedService?.id,
@@ -642,6 +681,9 @@ export default function ClientChat() {
 
       setBookingId(newBookingId)
       setBookingStatus('pending')
+      if (newBookingId && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+        subscribeToPush(slug, newBookingId)
+      }
       setStep(6)
 
       const replyTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -1236,7 +1278,7 @@ export default function ClientChat() {
                               <div className="flex items-center gap-2 px-1">
                                 <div className="w-px h-5 bg-slate-200 rounded-full" />
                                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                                  {date === 'Завтра' || date.includes('.') ? date : date}
+                                  {formatSlotDay(date)}
                                 </span>
                               </div>
                               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-1.5">

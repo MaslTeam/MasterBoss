@@ -22,7 +22,10 @@ class Master(Base):
     niche = Column(String(100), nullable=False)                         # например, 'Маникюр'
     trial_active = Column(Boolean, default=True, nullable=False)
     default_deposit = Column(Integer, default=500, nullable=False)
-    pin_code = Column(String(20), default="1234", nullable=False)
+    pin_code = Column(String(200), default="1234", nullable=False)      # хэш PIN: pbkdf2$соль$хэш
+    work_schedule = Column(String(500), nullable=True)                  # JSON: {"mon": ["10:00", "20:00"], ..., "sun": null}
+    slot_step_min = Column(Integer, default=60, nullable=True)          # шаг начала записи, минут
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=True)
 
     # Связи
     services = relationship("Service", back_populates="master", cascade="all, delete-orphan")
@@ -62,6 +65,7 @@ class Client(Base):
     phone = Column(String(30), nullable=False, index=True)
     cycle_days = Column(Integer, default=21, nullable=False)            # Периодичность посещений в днях
     last_visit_date = Column(DateTime, nullable=True)                   # Дата последнего визита
+    return_push_at = Column(DateTime, nullable=True)                    # когда отправили пуш «пора вернуться»
 
     # Связи
     master = relationship("Master", back_populates="clients")
@@ -113,6 +117,7 @@ class PushSubscription(Base):
     p256dh = Column(String(500), nullable=True)
     auth = Column(String(200), nullable=True)
     user_agent = Column(String(300), nullable=True)
+    client_id = Column(Integer, nullable=True, index=True)              # чей это браузер: пуши только этому клиенту
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 

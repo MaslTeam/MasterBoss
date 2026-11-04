@@ -55,11 +55,9 @@ import {
   CartesianGrid,
   Legend
 } from 'recharts'
+import { Link } from 'react-router-dom'
+import { API_BASE, apiFetch, getSession, saveSession, clearSession } from '../api'
 
-const API_BASE = (import.meta.env.VITE_API_URL !== undefined && import.meta.env.VITE_API_URL !== '')
-  ? import.meta.env.VITE_API_URL
-  : (import.meta.env.DEV ? 'http://localhost:8000' : '')
-const DEFAULT_SLUG = 'anna'
 
 // Категории расходов мастера
 const EXPENSE_CATEGORIES = [
@@ -76,16 +74,17 @@ const EXPENSE_CATEGORIES = [
 // Быстрый выбор сумм для мобильного ввода
 const QUICK_AMOUNTS = [500, 1000, 2500, 5000]
 
-export default function MasterApp() {
-  const slug = DEFAULT_SLUG
-  const authStorageKey = `masterboss_auth_${slug}`
+const WEEKDAYS = [
+  ['mon', 'Пн'], ['tue', 'Вт'], ['wed', 'Ср'], ['thu', 'Чт'], ['fri', 'Пт'], ['sat', 'Сб'], ['sun', 'Вс']
+]
 
+export default function MasterApp() {
   // ===================================================================
-  // 1. АВТОРИЗАЦИЯ ПО PIN-КОДУ
+  // 1. АВТОРИЗАЦИЯ: адрес страницы + PIN → токен (хранится в localStorage)
   // ===================================================================
-  const [isAuthenticated, setIsAuthenticated] = useState(() => {
-    return localStorage.getItem(authStorageKey) === 'true'
-  })
+  const [slug, setSlug] = useState(() => getSession().slug)
+  const [isAuthenticated, setIsAuthenticated] = useState(() => Boolean(getSession().token))
+  const [slugInput, setSlugInput] = useState(() => getSession().slug)
   const [pinInput, setPinInput] = useState('')
   const [pinError, setPinError] = useState('')
   const [pinLoading, setPinLoading] = useState(false)
@@ -158,8 +157,12 @@ export default function MasterApp() {
   // -------------------------------------------------------------------
   const [services, setServices] = useState([])
   const [loadingServices, setLoadingServices] = useState(false)
-  const [profileForm, setProfileForm] = useState({ name: 'Анна Nails', niche: 'Маникюр', pin_code: '1234' })
+  const [profileForm, setProfileForm] = useState({ name: getSession().name || '', niche: '', pin_code: '' })
   const [profileSaving, setProfileSaving] = useState(false)
+  // График работы: { mon: ['10:00','20:00'], ..., sun: null }
+  const [workSchedule, setWorkSchedule] = useState(null)
+  const [slotStep, setSlotStep] = useState(60)
+  const [scheduleSaving, setScheduleSaving] = useState(false)
 
   // Модальные окна услуг
   const [serviceModal, setServiceModal] = useState({ open: false, mode: 'create', data: { name: '', price: '', duration_min: 60 } })
@@ -278,7 +281,7 @@ export default function MasterApp() {
         user_agent: navigator.userAgent
       }
 
-      const res = await fetch(`${API_BASE}/api/app/notifications/push-subscribe`, {
+      const res = await apiFetch(`${API_BASE}/api/app/notifications/push-subscribe`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(pushSubscription)
@@ -331,7 +334,7 @@ export default function MasterApp() {
   const checkUpcomingBookings = useCallback(async () => {
     if (!isAuthenticated) return
     try {
-      const res = await fetch(`${API_BASE}/api/app/notifications/upcoming?slug=${slug}`)
+      const res = await apiFetch(`${API_BASE}/api/app/notifications/upcoming?slug=${slug}`)
       if (res.ok) {
         const data = await res.json()
         setUpcomingNotifications(data)
@@ -351,7 +354,7 @@ export default function MasterApp() {
   const checkClientsDue = useCallback(async () => {
     if (!isAuthenticated) return
     try {
-      const res = await fetch(`${API_BASE}/api/app/notifications/clients-due?slug=${slug}`)
+      const res = await apiFetch(`${API_BASE}/api/app/notifications/clients-due?slug=${slug}`)
       if (res.ok) {
         const data = await res.json()
         setClientsDue(data)
@@ -373,7 +376,7 @@ export default function MasterApp() {
   const loadUpcomingReminders = useCallback(async () => {
     if (!isAuthenticated) return
     try {
-      const res = await fetch(`${API_BASE}/api/app/notifications/upcoming?slug=${slug}`)
+      const res = await apiFetch(`${API_BASE}/api/app/notifications/upcoming?slug=${slug}`)
       if (res.ok) {
         const data = await res.json()
         setUpcomingReminders(data)
@@ -390,7 +393,7 @@ export default function MasterApp() {
     if (!isAuthenticated) return
     setAuditLoading(true)
     try {
-      const res = await fetch(`${API_BASE}/api/app/ai/business-audit?slug=${slug}`, {
+      const res = await apiFetch(`${API_BASE}/api/app/ai/business-audit?slug=${slug}`, {
         method: 'POST',
       })
       if (!res.ok) throw new Error('Сервер вернул ошибку ' + res.status)
@@ -426,7 +429,7 @@ export default function MasterApp() {
     }
     setConflictModal(prev => ({ ...prev, loading: true }))
     try {
-      const res = await fetch(`${API_BASE}/api/app/ai/conflict-resolver`, {
+      const res = await apiFetch(`${API_BASE}/api/app/ai/conflict-resolver`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -470,7 +473,7 @@ export default function MasterApp() {
     if (!careCardModal.bookingId) return
     setCareCardModal(prev => ({ ...prev, loading: true }))
     try {
-      const res = await fetch(`${API_BASE}/api/app/booking/${careCardModal.bookingId}/send-care-card`, {
+      const res = await apiFetch(`${API_BASE}/api/app/booking/${careCardModal.bookingId}/send-care-card`, {
         method: 'POST'
       })
       if (!res.ok) throw new Error('Ошибка отправки')
@@ -503,7 +506,7 @@ export default function MasterApp() {
     setError(null)
 
     try {
-      const res = await fetch(`${API_BASE}/api/app/stats?slug=${slug}`)
+      const res = await apiFetch(`${API_BASE}/api/app/stats?slug=${slug}`)
       if (!res.ok) throw new Error(`Ошибка загрузки данных (${res.status})`)
       const data = await res.json()
       setStats(data)
@@ -521,7 +524,7 @@ export default function MasterApp() {
     if (!isAuthenticated) return
     setLoadingClients(true)
     try {
-      const res = await fetch(`${API_BASE}/api/app/clients?slug=${slug}`)
+      const res = await apiFetch(`${API_BASE}/api/app/clients?slug=${slug}`)
       if (res.ok) {
         const data = await res.json()
         setClients(data)
@@ -538,7 +541,7 @@ export default function MasterApp() {
     if (!isAuthenticated) return
     setLoadingServices(true)
     try {
-      const res = await fetch(`${API_BASE}/api/app/services?slug=${slug}`)
+      const res = await apiFetch(`${API_BASE}/api/app/services?slug=${slug}`)
       if (res.ok) {
         const data = await res.json()
         setServices(data)
@@ -554,20 +557,32 @@ export default function MasterApp() {
   const fetchProfile = useCallback(async () => {
     if (!isAuthenticated) return
     try {
-      const res = await fetch(`${API_BASE}/api/app/profile?slug=${slug}`)
+      const res = await apiFetch(`${API_BASE}/api/app/profile?slug=${slug}`)
       if (res.ok) {
         const data = await res.json()
         setProfileForm(prev => ({
           ...prev,
           name: data.name || prev.name,
           niche: data.niche || prev.niche,
-          pin_code: data.pin_code || prev.pin_code
+          pin_code: ''
         }))
+        if (data.work_schedule) setWorkSchedule(data.work_schedule)
+        if (data.slot_step_min) setSlotStep(data.slot_step_min)
       }
     } catch (err) {
       console.error('Fetch profile error:', err)
     }
   }, [isAuthenticated, slug])
+
+  // Токен истёк или недействителен → показываем вход
+  useEffect(() => {
+    const onLogout = () => {
+      setIsAuthenticated(false)
+      setStats(null)
+    }
+    window.addEventListener('mb-logout', onLogout)
+    return () => window.removeEventListener('mb-logout', onLogout)
+  }, [])
 
   // Первичная загрузка при авторизации
   useEffect(() => {
@@ -627,7 +642,7 @@ export default function MasterApp() {
 
   const markCancellationRead = async (bookingId) => {
     try {
-      await fetch(`${API_BASE}/api/app/booking/${bookingId}/mark-cancellation-read`, { method: 'POST' })
+      await apiFetch(`${API_BASE}/api/app/booking/${bookingId}/mark-cancellation-read`, { method: 'POST' })
       fetchStats(true)
     } catch (err) {
       showToast('Ошибка при закрытии алерта: ' + err.message, 'error')
@@ -639,8 +654,8 @@ export default function MasterApp() {
   // ===================================================================
   const handlePinSubmit = async (e) => {
     if (e) e.preventDefault()
-    if (!pinInput.trim()) {
-      setPinError('Введите цифровой PIN-код')
+    if (!slugInput.trim() || !pinInput.trim()) {
+      setPinError('Введите адрес страницы и PIN-код')
       return
     }
 
@@ -651,7 +666,7 @@ export default function MasterApp() {
       const res = await fetch(`${API_BASE}/api/app/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ slug, pin: pinInput.trim() })
+        body: JSON.stringify({ slug: slugInput.trim().toLowerCase(), pin: pinInput.trim() })
       })
 
       if (!res.ok) {
@@ -661,7 +676,8 @@ export default function MasterApp() {
 
       const data = await res.json()
       if (data.success) {
-        localStorage.setItem(authStorageKey, 'true')
+        saveSession({ token: data.token, slug: data.slug, name: data.name })
+        setSlug(data.slug)
         setIsAuthenticated(true)
         setPinInput('')
         showToast('Вход выполнен успешно! Добро пожаловать.', 'success')
@@ -674,7 +690,7 @@ export default function MasterApp() {
   }
 
   const handleLogout = () => {
-    localStorage.removeItem(authStorageKey)
+    clearSession()
     setIsAuthenticated(false)
     setPinInput('')
     setStats(null)
@@ -694,7 +710,7 @@ export default function MasterApp() {
     }))
 
     try {
-      const res = await fetch(`${API_BASE}/api/app/booking/${bookingId}/confirm`, { method: 'POST' })
+      const res = await apiFetch(`${API_BASE}/api/app/booking/${bookingId}/confirm`, { method: 'POST' })
       if (!res.ok) throw new Error('Ошибка подтверждения')
       const updated = await res.json()
       setStats(prev => ({
@@ -715,7 +731,7 @@ export default function MasterApp() {
     setBookingActionLoading(bookingId)
     try {
       const action = visited ? 'visited' : 'no-show'
-      const res = await fetch(`${API_BASE}/api/app/booking/${bookingId}/${action}?slug=${slug}`, { method: 'POST' })
+      const res = await apiFetch(`${API_BASE}/api/app/booking/${bookingId}/${action}?slug=${slug}`, { method: 'POST' })
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}))
         throw new Error(errData.detail || 'Ошибка сервера')
@@ -745,7 +761,7 @@ export default function MasterApp() {
     }))
 
     try {
-      const res = await fetch(`${API_BASE}/api/app/booking/${bookingId}/reject`, { method: 'POST' })
+      const res = await apiFetch(`${API_BASE}/api/app/booking/${bookingId}/reject`, { method: 'POST' })
       if (!res.ok) throw new Error('Ошибка отмены')
       const updated = await res.json()
       setStats(prev => ({
@@ -826,12 +842,12 @@ export default function MasterApp() {
     setExpenseSubmitting(true)
     try {
       const res = editingTx
-        ? await fetch(`${API_BASE}/api/app/transaction/${editingTx.id}?slug=${slug}`, {
+        ? await apiFetch(`${API_BASE}/api/app/transaction/${editingTx.id}?slug=${slug}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ amount: amountVal, category: finalCategory })
           })
-        : await fetch(`${API_BASE}/api/app/transaction?slug=${slug}`, {
+        : await apiFetch(`${API_BASE}/api/app/transaction?slug=${slug}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ type: 'expense', amount: amountVal, category: finalCategory, source: expenseSource })
@@ -887,7 +903,7 @@ export default function MasterApp() {
     }
     setExpenseSubmitting(true)
     try {
-      const res = await fetch(`${API_BASE}/api/app/transaction/${editingTx.id}?slug=${slug}`, { method: 'DELETE' })
+      const res = await apiFetch(`${API_BASE}/api/app/transaction/${editingTx.id}?slug=${slug}`, { method: 'DELETE' })
       if (!res.ok) throw new Error('Ошибка удаления')
       closeExpenseModal()
       await fetchStats(true)
@@ -910,7 +926,7 @@ export default function MasterApp() {
     setAiExpenseLoading(true)
     try {
       // 1. Распознаем фразу через GigaChat
-      const parseRes = await fetch(`${API_BASE}/api/app/ai/parse-expense`, {
+      const parseRes = await apiFetch(`${API_BASE}/api/app/ai/parse-expense`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phrase: aiExpensePhrase.trim() })
@@ -943,7 +959,7 @@ export default function MasterApp() {
     setReminderModal({ open: true, client, text: '', loading: true })
     try {
       const daysAgo = client.days_since_last_visit ?? 21
-      const res = await fetch(`${API_BASE}/api/app/ai/reminder`, {
+      const res = await apiFetch(`${API_BASE}/api/app/ai/reminder`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -962,7 +978,7 @@ export default function MasterApp() {
       setReminderModal(prev => ({
         ...prev,
         loading: false,
-        text: `${client.name}, добрый день! 💖 Это Анна Nails. Пора обновить покрытие, чтобы ноготки оставались идеальными ✨ Для вас есть удобные окошки на этой неделе! Выбрать время онлайн: /c/anna`
+        text: `${client.name}, добрый день! Это ${profileForm.name || 'ваш мастер'}. Давно не виделись — есть удобные окошки на этой неделе ✨ Выбрать время онлайн: ${window.location.origin}/c/${slug}`
       }))
     }
   }
@@ -974,19 +990,77 @@ export default function MasterApp() {
     e.preventDefault()
     setProfileSaving(true)
     try {
-      const res = await fetch(`${API_BASE}/api/app/profile?slug=${slug}`, {
+      const res = await apiFetch(`${API_BASE}/api/app/profile?slug=${slug}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(profileForm)
+        body: JSON.stringify({
+          name: profileForm.name,
+          niche: profileForm.niche,
+          ...(profileForm.pin_code ? { pin_code: profileForm.pin_code } : {})
+        })
       })
-      if (!res.ok) throw new Error('Ошибка сохранения профиля')
-      showToast('Настройки профиля и PIN-код успешно сохранены! ⚙️', 'success')
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.detail || 'Ошибка сохранения профиля')
+      }
+      showToast(profileForm.pin_code ? 'Профиль и новый PIN сохранены ⚙️' : 'Профиль сохранён ⚙️', 'success')
       await fetchProfile()
     } catch (err) {
       showToast('Не удалось сохранить настройки: ' + err.message, 'error')
     } finally {
       setProfileSaving(false)
     }
+  }
+
+  // Ссылка на страницу записи мастера (для сообщений клиентам)
+  const bookingLink = `${window.location.origin}/c/${slug}`
+
+  const copyReminderText = async (message = 'Текст скопирован! Вставьте в чат мессенджера 📋') => {
+    try {
+      await navigator.clipboard.writeText(reminderModal.text)
+      showToast(message, 'success')
+    } catch {
+      showToast('Не удалось скопировать — выделите текст вручную', 'error')
+    }
+  }
+
+  // Сохранить график работы
+  const handleSaveSchedule = async () => {
+    if (!workSchedule) return
+    for (const key of Object.keys(workSchedule)) {
+      const day = workSchedule[key]
+      if (day && day[0] >= day[1]) {
+        showToast('Время начала должно быть раньше конца рабочего дня', 'error')
+        return
+      }
+    }
+    setScheduleSaving(true)
+    try {
+      const res = await apiFetch(`${API_BASE}/api/app/schedule`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ schedule: workSchedule, slot_step_min: Number(slotStep) })
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Ошибка сохранения')
+      showToast('График сохранён. Клиенты видят только свободные окна 📅', 'success')
+    } catch (err) {
+      showToast('Не удалось сохранить график: ' + err.message, 'error')
+    } finally {
+      setScheduleSaving(false)
+    }
+  }
+
+  const toggleWorkDay = (key) => {
+    setWorkSchedule(prev => ({ ...prev, [key]: prev[key] ? null : ['10:00', '20:00'] }))
+  }
+
+  const setWorkTime = (key, index, value) => {
+    setWorkSchedule(prev => {
+      const day = [...(prev[key] || ['10:00', '20:00'])]
+      day[index] = value
+      return { ...prev, [key]: day }
+    })
   }
 
   // Создать / обновить услугу
@@ -1001,7 +1075,7 @@ export default function MasterApp() {
     setServiceSaving(true)
     try {
       if (serviceModal.mode === 'create') {
-        const res = await fetch(`${API_BASE}/api/app/services?slug=${slug}`, {
+        const res = await apiFetch(`${API_BASE}/api/app/services?slug=${slug}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1013,7 +1087,7 @@ export default function MasterApp() {
         if (!res.ok) throw new Error('Ошибка создания услуги')
         showToast('Услуга успешно добавлена в прайс-лист! 💅', 'success')
       } else {
-        const res = await fetch(`${API_BASE}/api/app/services/${serviceModal.data.id}?slug=${slug}`, {
+        const res = await apiFetch(`${API_BASE}/api/app/services/${serviceModal.data.id}?slug=${slug}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1041,7 +1115,7 @@ export default function MasterApp() {
     if (!window.confirm('Деактивировать эту услугу? Она перестанет отображаться для клиентов в онлайн-записи.')) return
 
     try {
-      const res = await fetch(`${API_BASE}/api/app/services/${serviceId}?slug=${slug}`, {
+      const res = await apiFetch(`${API_BASE}/api/app/services/${serviceId}?slug=${slug}`, {
         method: 'DELETE'
       })
       if (!res.ok) throw new Error('Ошибка удаления услуги')
@@ -1145,21 +1219,43 @@ export default function MasterApp() {
               Кабинет мастера
             </h1>
             <p className="text-xs text-slate-500 mt-1">
-              Вход защищен PIN-кодом для безопасности клиентов и финансов
+              Адрес вашей страницы записи и PIN-код
             </p>
           </div>
 
           <form onSubmit={handlePinSubmit} className="mt-6 space-y-4 relative z-10">
             <div>
-              <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2 text-center">
-                Введите PIN-код
+              <label htmlFor="login-slug" className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
+                Адрес страницы
+              </label>
+              <div className="flex items-center bg-slate-50 border-2 border-slate-200 rounded-2xl focus-within:border-purple-600 focus-within:bg-white transition-all">
+                <span className="pl-3 text-sm text-slate-400 font-mono select-none">/c/</span>
+                <input
+                  id="login-slug"
+                  type="text"
+                  autoCapitalize="none"
+                  autoComplete="username"
+                  placeholder="anna"
+                  value={slugInput}
+                  onChange={e => {
+                    setSlugInput(e.target.value)
+                    if (pinError) setPinError('')
+                  }}
+                  className="w-full bg-transparent py-3 pr-3 pl-0.5 text-base font-mono text-slate-900 focus:outline-none"
+                />
+              </div>
+            </div>
+            <div>
+              <label htmlFor="login-pin" className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
+                PIN-код
               </label>
               <input
                 type="password"
                 inputMode="numeric"
                 pattern="[0-9]*"
                 maxLength={8}
-                autoFocus
+                id="login-pin"
+                autoComplete="current-password"
                 placeholder="••••"
                 value={pinInput}
                 onChange={e => {
@@ -1179,7 +1275,7 @@ export default function MasterApp() {
 
             <button
               type="submit"
-              disabled={pinLoading || !pinInput}
+              disabled={pinLoading || !pinInput || !slugInput}
               className="w-full py-3.5 px-4 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-extrabold text-sm rounded-2xl shadow-lg shadow-purple-600/25 active:scale-[0.98] transition-all flex items-center justify-center gap-2 disabled:opacity-50"
             >
               {pinLoading ? (
@@ -1192,10 +1288,9 @@ export default function MasterApp() {
               )}
             </button>
 
-            <div className="text-center pt-2">
-              <span className="text-[11px] text-slate-400 bg-slate-100 px-3 py-1 rounded-full font-mono">
-                PIN по умолчанию: <strong>1234</strong>
-              </span>
+            <div className="flex items-center justify-between pt-1 text-xs">
+              <Link to="/" className="text-slate-500 hover:text-slate-800">← На главную</Link>
+              <Link to="/register" className="font-bold text-purple-700 hover:text-purple-900">Создать страницу</Link>
             </div>
           </form>
         </div>
@@ -1357,20 +1452,18 @@ export default function MasterApp() {
         {/* ========================================================= */}
         {/* ЧЕТЫРЕ ВКЛАДКИ НАВИГАЦИИ */}
         {/* ========================================================= */}
-        <nav className="grid grid-cols-5 gap-1 p-1 bg-slate-200/70 backdrop-blur-md rounded-2xl mb-4 text-xs font-bold">
+        <nav className="grid grid-cols-5 gap-1 p-1 bg-slate-200/70 backdrop-blur-md rounded-2xl mb-4 text-[10px] min-[400px]:text-[11px] sm:text-xs font-bold">
           {/* Вкладка 1: Заявки */}
           <button
             onClick={() => setActiveTab('bookings')}
-            className={`py-2 px-1 rounded-xl transition-all flex flex-col items-center justify-center gap-0.5 relative ${
+            className={`py-2 px-0.5 min-w-0 rounded-xl transition-all flex flex-col items-center justify-center gap-0.5 relative ${
               activeTab === 'bookings'
                 ? 'bg-white text-purple-700 shadow-sm'
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            <div className="flex items-center gap-1">
-              <BookOpen className="w-3.5 h-3.5" />
-              <span>Заявки</span>
-            </div>
+            <BookOpen className="w-4 h-4" />
+            <span className="block w-full truncate text-center leading-tight">Заявки</span>
             {pendingCount > 0 && (
               <span className="absolute -top-1 -right-1 px-1.5 py-0.2 rounded-full bg-amber-500 text-white text-[10px] font-black animate-pulse">
                 {pendingCount}
@@ -1381,61 +1474,53 @@ export default function MasterApp() {
           {/* Вкладка 2: Финансы */}
           <button
             onClick={() => setActiveTab('finance')}
-            className={`py-2 px-1 rounded-xl transition-all flex flex-col items-center justify-center gap-0.5 ${
+            className={`py-2 px-0.5 min-w-0 rounded-xl transition-all flex flex-col items-center justify-center gap-0.5 relative ${
               activeTab === 'finance'
                 ? 'bg-white text-purple-700 shadow-sm'
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            <div className="flex items-center gap-1">
-              <DollarSign className="w-3.5 h-3.5" />
-              <span>Финансы</span>
-            </div>
+            <DollarSign className="w-4 h-4" />
+            <span className="block w-full truncate text-center leading-tight">Финансы</span>
           </button>
 
           {/* Вкладка 3: Клиенты и Возврат */}
           <button
             onClick={() => setActiveTab('clients')}
-            className={`py-2 px-1 rounded-xl transition-all flex flex-col items-center justify-center gap-0.5 ${
+            className={`py-2 px-0.5 min-w-0 rounded-xl transition-all flex flex-col items-center justify-center gap-0.5 relative ${
               activeTab === 'clients'
                 ? 'bg-white text-purple-700 shadow-sm'
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            <div className="flex items-center gap-1">
-              <Users className="w-3.5 h-3.5" />
-              <span>Возврат</span>
-            </div>
+            <Users className="w-4 h-4" />
+            <span className="block w-full truncate text-center leading-tight">Возврат</span>
           </button>
 
           {/* Вкладка 4: Настройки */}
           <button
             onClick={() => setActiveTab('settings')}
-            className={`py-2 px-1 rounded-xl transition-all flex flex-col items-center justify-center gap-0.5 ${
+            className={`py-2 px-0.5 min-w-0 rounded-xl transition-all flex flex-col items-center justify-center gap-0.5 relative ${
               activeTab === 'settings'
                 ? 'bg-white text-purple-700 shadow-sm'
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            <div className="flex items-center gap-1">
-              <Settings className="w-3.5 h-3.5" />
-              <span>Настр.</span>
-            </div>
+            <Settings className="w-4 h-4" />
+            <span className="block w-full truncate text-center leading-tight">Настройки</span>
           </button>
 
           {/* Вкладка 5: Напоминания */}
           <button
             onClick={() => setActiveTab('reminders')}
-            className={`py-2 px-1 rounded-xl transition-all flex flex-col items-center justify-center gap-0.5 ${
+            className={`py-2 px-0.5 min-w-0 rounded-xl transition-all flex flex-col items-center justify-center gap-0.5 relative ${
               activeTab === 'reminders'
                 ? 'bg-white text-purple-700 shadow-sm'
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            <div className="flex items-center gap-1">
-              <Bell className="w-3.5 h-3.5" />
-              <span>Напомнить</span>
-            </div>
+            <Bell className="w-4 h-4" />
+            <span className="block w-full truncate text-center leading-tight">Напомнить</span>
             {upcomingReminders.length > 0 && (
               <span className="absolute -top-1 -right-1 px-1.5 py-0.2 rounded-full bg-amber-500 text-white text-[9px] font-black animate-pulse">
                 {upcomingReminders.length}
@@ -2215,14 +2300,16 @@ export default function MasterApp() {
 
                 <div>
                   <label className="block text-xs font-bold text-slate-600 uppercase mb-1">
-                    PIN-код для входа в кабинет
+                    Новый PIN-код
                   </label>
                   <input
-                    type="text"
-                    required
+                    type="password"
+                    inputMode="numeric"
+                    autoComplete="new-password"
                     maxLength={8}
+                    placeholder="Оставьте пустым, чтобы не менять"
                     value={profileForm.pin_code}
-                    onChange={e => setProfileForm(prev => ({ ...prev, pin_code: e.target.value }))}
+                    onChange={e => setProfileForm(prev => ({ ...prev, pin_code: e.target.value.replace(/\D/g, '') }))}
                     className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500"
                   />
                 </div>
@@ -2235,6 +2322,91 @@ export default function MasterApp() {
                   {profileSaving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <span>Сохранить настройки</span>}
                 </button>
               </form>
+            </div>
+
+            {/* БЛОК 1.5: ГРАФИК РАБОТЫ */}
+            <div className="bg-white rounded-3xl p-5 shadow-card border border-slate-100">
+              <div className="flex items-center gap-2 mb-1 pb-2 border-b border-slate-100">
+                <Calendar className="w-4 h-4 text-purple-600" />
+                <h2 className="text-sm sm:text-base font-bold text-slate-900">
+                  График работы
+                </h2>
+              </div>
+              <p className="text-[11px] text-slate-500 mb-3">
+                Клиенты на странице записи видят только окна в рабочие часы, с учётом длительности услуги и уже занятого времени.
+              </p>
+
+              {!workSchedule ? (
+                <div className="py-4 text-center text-xs text-slate-400">Загрузка графика…</div>
+              ) : (
+                <div className="space-y-1.5">
+                  {WEEKDAYS.map(([key, label]) => {
+                    const day = workSchedule[key]
+                    return (
+                      <div key={key} className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => toggleWorkDay(key)}
+                          className={`w-12 shrink-0 py-2 rounded-xl text-xs font-bold border transition-colors ${
+                            day ? 'bg-purple-600 text-white border-purple-600' : 'bg-slate-50 text-slate-400 border-slate-200'
+                          }`}
+                          aria-pressed={Boolean(day)}
+                        >
+                          {label}
+                        </button>
+                        {day ? (
+                          <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                            <input
+                              type="time"
+                              step="900"
+                              value={day[0]}
+                              onChange={e => setWorkTime(key, 0, e.target.value)}
+                              className="flex-1 min-w-0 px-2 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                            />
+                            <span className="text-slate-400 text-xs">—</span>
+                            <input
+                              type="time"
+                              step="900"
+                              value={day[1]}
+                              onChange={e => setWorkTime(key, 1, e.target.value)}
+                              className="flex-1 min-w-0 px-2 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                            />
+                          </div>
+                        ) : (
+                          <span className="flex-1 text-xs text-slate-400">Выходной</span>
+                        )}
+                      </div>
+                    )
+                  })}
+
+                  <div className="flex items-center justify-between gap-2 pt-2">
+                    <label htmlFor="slot-step" className="text-xs font-bold text-slate-600">
+                      Шаг записи
+                    </label>
+                    <select
+                      id="slot-step"
+                      value={slotStep}
+                      onChange={e => setSlotStep(Number(e.target.value))}
+                      className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    >
+                      <option value={15}>каждые 15 минут</option>
+                      <option value={30}>каждые 30 минут</option>
+                      <option value={60}>каждый час</option>
+                      <option value={90}>каждые 1,5 часа</option>
+                      <option value={120}>каждые 2 часа</option>
+                    </select>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleSaveSchedule}
+                    disabled={scheduleSaving}
+                    className="w-full mt-2 py-3 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-bold text-xs sm:text-sm rounded-xl shadow-md shadow-purple-600/20 active:scale-95 transition-all flex items-center justify-center gap-1.5"
+                  >
+                    {scheduleSaving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <span>Сохранить график</span>}
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* БЛОК 2: ПРАЙС-ЛИСТ И УСЛУГИ */}
@@ -2763,27 +2935,37 @@ export default function MasterApp() {
                   {reminderModal.text}
                 </div>
 
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-3 gap-2">
                   <button
-                    onClick={() => {
-                      navigator.clipboard.writeText(reminderModal.text)
-                      showToast('Текст скопирован! Вставьте в чат мессенджера 📋', 'success')
-                    }}
-                    className="py-2.5 px-3 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs rounded-xl flex items-center justify-center gap-1"
+                    onClick={() => copyReminderText()}
+                    className="py-2.5 px-2 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs rounded-xl flex items-center justify-center gap-1"
                   >
                     <Copy className="w-3.5 h-3.5" />
-                    <span>Скопировать</span>
+                    <span>Копировать</span>
                   </button>
 
                   <a
-                    href={`https://wa.me/${(reminderModal.client?.phone || '').replace(/\D/g, '')}?text=${encodeURIComponent(reminderModal.text)}`}
+                    href={`https://t.me/share/url?url=${encodeURIComponent(bookingLink)}&text=${encodeURIComponent(reminderModal.text)}`}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1 shadow-sm"
+                    className="py-2.5 px-2 bg-sky-500 hover:bg-sky-600 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1 shadow-sm"
                   >
-                    <span>В WhatsApp 💬</span>
+                    <span>Telegram</span>
                   </a>
+
+                  <button
+                    onClick={async () => {
+                      await copyReminderText('Текст скопирован — вставьте его в чат MAX')
+                      window.open('https://web.max.ru/', '_blank', 'noopener,noreferrer')
+                    }}
+                    className="py-2.5 px-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1 shadow-sm"
+                  >
+                    <span>MAX</span>
+                  </button>
                 </div>
+                <p className="text-[10px] text-slate-400 text-center">
+                  Telegram откроется с готовым текстом. Для MAX текст копируется — выберите клиента и вставьте.
+                </p>
               </div>
             )}
           </div>
