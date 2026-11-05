@@ -1,25 +1,27 @@
 import React, { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
-import { Sparkles, ArrowLeft, RefreshCw } from 'lucide-react'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { Icon, Dot, Button } from '../components/ui'
 import { API_BASE, saveSession, slugify } from '../api'
-
-const NICHES = ['Маникюр', 'Брови и ресницы', 'Массаж', 'Репетитор', 'Автосервис', 'Другое']
-
-const inputClass =
-  'w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500'
+import { NICHES } from '../utils/niches'
 
 // Текст ошибки из ответа FastAPI (строка или список ошибок валидации)
 function errorText(data, status) {
   if (typeof data?.detail === 'string') return data.detail
-  if (Array.isArray(data?.detail) && data.detail[0]?.msg) return 'Проверьте поля формы'
+  if (Array.isArray(data?.detail)) return 'Проверьте поля формы'
   return `Ошибка сервера (${status})`
 }
 
+const lineInput = 'pb-2.5 border-0 border-b-[1.5px] border-[#D9D6CF] text-[17px] font-semibold text-ink bg-transparent focus:border-ink focus:shadow-none'
+
 export default function Register() {
   const navigate = useNavigate()
-  const [name, setName] = useState('')
-  const [niche, setNiche] = useState(NICHES[0])
-  const [slug, setSlug] = useState('')
+  const [params] = useSearchParams()
+  const initialName = params.get('name') || ''
+  const initialNiche = NICHES.includes(params.get('niche')) ? params.get('niche') : NICHES[0]
+
+  const [name, setName] = useState(initialName)
+  const [niche, setNiche] = useState(initialNiche)
+  const [slug, setSlug] = useState(slugify(initialName))
   const [slugTouched, setSlugTouched] = useState(false)
   const [pin, setPin] = useState('')
   const [pin2, setPin2] = useState('')
@@ -28,7 +30,6 @@ export default function Register() {
 
   const handleName = (value) => {
     setName(value)
-    // Пока мастер не правил адрес вручную — подставляем его из имени
     if (!slugTouched) setSlug(slugify(value))
   }
 
@@ -59,109 +60,75 @@ export default function Register() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 flex items-center justify-center px-4 py-8">
-      <div className="w-full max-w-sm">
-        <Link to="/" className="inline-flex items-center gap-1 text-xs font-bold text-slate-500 hover:text-slate-800 mb-4">
-          <ArrowLeft className="w-3.5 h-3.5" /> На главную
-        </Link>
-
-        <div className="bg-white rounded-3xl p-6 shadow-card border border-slate-100">
-          <div className="flex items-center gap-2 mb-1">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-purple-600 to-indigo-600 flex items-center justify-center">
-              <Sparkles className="w-5 h-5 text-white" />
-            </div>
-            <h1 className="text-lg font-black text-slate-900">Страница записи за минуту</h1>
-          </div>
-          <p className="text-xs text-slate-500 mb-5">
-            Добавим типовые услуги вашей ниши — цены и длительность поменяете в настройках.
-          </p>
-
-          <form onSubmit={handleSubmit} className="space-y-3" noValidate>
-            <div>
-              <label htmlFor="reg-name" className="block text-xs font-bold text-slate-600 mb-1">Имя или название</label>
-              <input
-                id="reg-name"
-                className={inputClass}
-                placeholder="Например, Анна Nails"
-                value={name}
-                onChange={e => handleName(e.target.value)}
-                autoComplete="name"
-              />
-            </div>
-
-            <div>
-              <label htmlFor="reg-niche" className="block text-xs font-bold text-slate-600 mb-1">Чем занимаетесь</label>
-              <select id="reg-niche" className={inputClass} value={niche} onChange={e => setNiche(e.target.value)}>
-                {NICHES.map(n => <option key={n} value={n}>{n}</option>)}
-              </select>
-            </div>
-
-            <div>
-              <label htmlFor="reg-slug" className="block text-xs font-bold text-slate-600 mb-1">Адрес страницы для клиентов</label>
-              <div className="flex items-center bg-slate-50 border border-slate-200 rounded-xl focus-within:ring-2 focus-within:ring-purple-500">
-                <span className="pl-3.5 text-sm text-slate-400 select-none">/c/</span>
-                <input
-                  id="reg-slug"
-                  className="flex-1 min-w-0 pr-3.5 py-2.5 bg-transparent text-sm text-slate-900 focus:outline-none"
-                  placeholder="anna-nails"
-                  value={slug}
-                  onChange={e => { setSlugTouched(true); setSlug(slugify(e.target.value)) }}
-                  autoCapitalize="none"
-                  spellCheck={false}
-                />
-              </div>
-              <p className="text-[11px] text-slate-400 mt-1">Латиница, цифры и дефис. Эту ссылку вы отправите клиентам.</p>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label htmlFor="reg-pin" className="block text-xs font-bold text-slate-600 mb-1">PIN для входа</label>
-                <input
-                  id="reg-pin"
-                  type="password"
-                  inputMode="numeric"
-                  autoComplete="new-password"
-                  maxLength={8}
-                  className={`${inputClass} font-mono`}
-                  placeholder="4–8 цифр"
-                  value={pin}
-                  onChange={e => setPin(e.target.value.replace(/\D/g, ''))}
-                />
-              </div>
-              <div>
-                <label htmlFor="reg-pin2" className="block text-xs font-bold text-slate-600 mb-1">Повторите PIN</label>
-                <input
-                  id="reg-pin2"
-                  type="password"
-                  inputMode="numeric"
-                  autoComplete="new-password"
-                  maxLength={8}
-                  className={`${inputClass} font-mono`}
-                  value={pin2}
-                  onChange={e => setPin2(e.target.value.replace(/\D/g, ''))}
-                />
-              </div>
-            </div>
-
-            {error && (
-              <div role="alert" className="px-3 py-2 bg-rose-50 border border-rose-200 rounded-xl text-xs font-semibold text-rose-700">
-                {error}
-              </div>
-            )}
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full py-3 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-bold text-sm rounded-xl shadow-md shadow-purple-600/20 active:scale-95 transition-all flex items-center justify-center gap-1.5 disabled:opacity-60"
-            >
-              {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : 'Создать страницу'}
-            </button>
-          </form>
-
-          <p className="text-xs text-slate-500 text-center mt-4">
-            Уже есть страница? <Link to="/app" className="font-bold text-purple-700 hover:underline">Войти</Link>
-          </p>
+    <div className="min-h-screen bg-white sm:bg-cream sm:py-10">
+      <div className="max-w-[440px] mx-auto bg-white min-h-screen sm:min-h-0 sm:rounded-[36px] sm:overflow-hidden sm:shadow-[0_20px_60px_rgba(18,18,18,0.08)] flex flex-col">
+        <div className="relative bg-ink text-white px-6 pt-[22px] pb-8 rounded-b-[44px]">
+          <Dot className="right-[30px] top-[70px] w-10 h-10" color="#FFC531" />
+          <Dot className="right-20 top-[116px] w-3.5 h-3.5 mb-d3" color="#F2795A" />
+          <Link to="/" className="inline-flex items-center gap-1.5 text-[13px] font-bold text-onink no-underline hover:text-white">
+            <Icon name="back" size={16} stroke={2} /> На главную
+          </Link>
+          <h1 className="mt-[26px] mb-2 font-display font-bold text-[26px] leading-[1.12] tracking-[-0.03em] max-w-[260px] mb-in">Страница записи за минуту</h1>
+          <p className="m-0 text-sm leading-relaxed text-onink max-w-[280px] mb-in mb-d1">Добавим типовые услуги вашей ниши — цены поменяете потом.</p>
         </div>
+
+        <form onSubmit={handleSubmit} className="px-6 pt-6 pb-7 flex flex-col gap-5 flex-1 mb-in mb-d2" noValidate>
+          <label className="flex flex-col gap-2 text-xs font-bold text-muted">Имя или название
+            <input className={lineInput} value={name} onChange={e => handleName(e.target.value)} placeholder="Например, Ольга Брови" autoComplete="name" />
+          </label>
+
+          <fieldset className="border-0 m-0 p-0 flex flex-col gap-2.5">
+            <legend className="p-0 mb-2.5 text-xs font-bold text-muted">Чем занимаетесь</legend>
+            <div className="flex flex-wrap gap-2">
+              {NICHES.map(n => (
+                <button
+                  key={n}
+                  type="button"
+                  aria-pressed={niche === n}
+                  onClick={() => setNiche(n)}
+                  className={`px-3.5 py-2.5 rounded-full border-[1.5px] text-sm font-bold ${niche === n ? 'bg-ink text-white border-ink' : 'bg-white text-ink border-[#E2E0DA] hover:border-ink'}`}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+          </fieldset>
+
+          <label className="flex flex-col gap-2 text-xs font-bold text-muted">Адрес страницы для клиентов
+            <span className="flex items-baseline border-b-[1.5px] border-[#D9D6CF] pb-2.5 focus-within:border-ink transition-colors">
+              <span className="text-[17px] font-semibold text-[#8C8984]">/c/</span>
+              <input
+                className="flex-1 min-w-0 border-0 p-0 text-[17px] font-semibold text-ink bg-transparent focus:shadow-none"
+                value={slug}
+                onChange={e => { setSlugTouched(true); setSlug(slugify(e.target.value)) }}
+                placeholder="olga-brovi"
+                autoCapitalize="none"
+                spellCheck={false}
+              />
+            </span>
+            <span className="font-medium text-[11px] text-muted">Латиница, цифры и дефис. Эту ссылку вы отправите клиентам.</span>
+          </label>
+
+          <div className="grid grid-cols-2 gap-4">
+            <label className="flex flex-col gap-2 text-xs font-bold text-muted">PIN для входа
+              <input type="password" inputMode="numeric" autoComplete="new-password" maxLength={8} placeholder="4–8 цифр"
+                className={`${lineInput} tracking-[0.3em] placeholder:tracking-normal placeholder:font-medium`} value={pin} onChange={e => setPin(e.target.value.replace(/\D/g, ''))} />
+            </label>
+            <label className="flex flex-col gap-2 text-xs font-bold text-muted">Повторите PIN
+              <input type="password" inputMode="numeric" autoComplete="new-password" maxLength={8}
+                className={`${lineInput} tracking-[0.3em]`} value={pin2} onChange={e => setPin2(e.target.value.replace(/\D/g, ''))} />
+            </label>
+          </div>
+
+          {error && (
+            <div role="alert" className="px-4 py-3 rounded-2xl bg-[#FCEDEC] text-sm font-bold text-danger mb-fade">{error}</div>
+          )}
+
+          <div className="mt-auto pt-4 flex flex-col gap-3.5">
+            <Button type="submit" variant="sun" size="lg" loading={loading} className="w-full">Создать страницу</Button>
+            <div className="text-center text-sm text-body">Уже есть страница? <Link to="/app" className="font-extrabold text-ink">Войти</Link></div>
+          </div>
+        </form>
       </div>
     </div>
   )

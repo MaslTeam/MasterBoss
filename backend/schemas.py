@@ -55,6 +55,7 @@ class LoginResponse(BaseModel):
     token: str
     slug: str
     name: str
+    is_demo: bool = False
 
 
 class RegisterRequest(BaseModel):
@@ -83,6 +84,7 @@ class MasterResponse(BaseModel):
     trial_active: bool
     pin_code: Optional[str] = None
     services: list[ServiceResponse] = []
+    schedule_text: Optional[str] = None      # «пн–сб 10:00–20:00» для шапки страницы записи
 
 
 class BookingResponse(BaseModel):
@@ -98,6 +100,9 @@ class BookingResponse(BaseModel):
     status: str
     scheduled_at: Optional[datetime] = None
     can_mark_visit: bool = Field(default=False, description="Время визита наступило — можно отметить «Пришла / Не пришла»")
+    source: Optional[str] = None
+    ref: Optional[str] = None
+    created_at: Optional[datetime] = None
 
 
 class BookingStatusResponse(BaseModel):
@@ -210,6 +215,13 @@ class ChatMessageRequest(BaseModel):
     push_endpoint: Optional[str] = Field(default=None, description="Push-подписка этого браузера: свяжем её с клиентом")
     service_id: Optional[int] = Field(default=None, description="ID услуги из прайса мастера (предпочтительно)")
     price: Optional[float] = Field(default=None, description="Устарело: игнорируется, цена берётся из прайса мастера")
+    source: Optional[str] = Field(default=None, max_length=20, description="'link' — страница записи, 'test' — тестовая заявка из кабинета")
+    ref: Optional[str] = Field(default=None, max_length=40, description="Метка источника из ссылки ?from=insta")
+
+
+class FreeRequest(BaseModel):
+    """Запрос клиента своими словами: «маникюр завтра после 15»"""
+    text: str = Field(..., min_length=3, max_length=300)
 
 
 class ChatMessageResponse(BaseModel):
@@ -217,6 +229,7 @@ class ChatMessageResponse(BaseModel):
     reply_text: str
     booking_created: bool
     booking_id: Optional[int] = None
+    client_token: Optional[str] = None
     details: Optional[dict] = None
 
 
@@ -228,6 +241,7 @@ class PushSubscriptionCreate(BaseModel):
     auth: Optional[str] = Field(default=None, description="Ключ шифрования auth")
     user_agent: Optional[str] = Field(default=None, description="User-Agent браузера")
     booking_id: Optional[int] = Field(default=None, description="Запись клиента — пуши придут только этому клиенту")
+    booking_token: Optional[str] = Field(default=None, description="Секрет записи (client_token из ответа на запись)")
 
 
 class PushSubscriptionResponse(BaseModel):

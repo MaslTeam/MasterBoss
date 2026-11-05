@@ -166,11 +166,11 @@ SYSTEM_PROMPT = """Ты — NLU-парсер онлайн-записи к бью
   "service_name": "Название услуги (например: Маникюр, Педикюр, Снятие + покрытие, Наращивание)",
   "datetime_str": "Дата и время в понятном виде (например: Завтра в 16:00, Четверг 15:00)",
   "price": 2500,
-  "reply_to_client": "Короткий вежливый ответ ассистента клиенту с повторением выбранной услуги, даты и времени: 'Зафиксировала заявку на [услуга] в [время]. Передала мастеру на сверку с бумажным блокнотом!'"
+  "reply_to_client": "Короткий вежливый ответ ассистента клиенту с повторением выбранной услуги, даты и времени: 'Зафиксировала заявку на [услуга] в [время]. Передала мастеру — подтверждение придёт сюда.'"
 }
 
 Пример входного текста: "Привет, я Катя 89991112233 хочу на педикюр в пятницу к 18:00"
-Пример ответа: {"client_name": "Катя", "client_phone": "89991112233", "service_name": "Педикюр", "datetime_str": "Пятница, 18:00", "price": 2500, "reply_to_client": "Катя, здравствуйте! Заявку на педикюр на пятницу в 18:00 зафиксировала. Передала мастеру на сверку с бумажным блокнотом!"}"""
+Пример ответа: {"client_name": "Катя", "client_phone": "89991112233", "service_name": "Педикюр", "datetime_str": "Пятница, 18:00", "price": 2500, "reply_to_client": "Катя, здравствуйте! Заявку на педикюр на пятницу в 18:00 зафиксировала. Передала мастеру — подтверждение придёт сюда."}"""
 
 
 def _fallback_parse(text: str, client_name: str = "", client_phone: str = "") -> dict:
@@ -260,9 +260,9 @@ def _fallback_parse(text: str, client_name: str = "", client_phone: str = "") ->
 
     # 5. Формирование ответа
     if name and name != "Клиент":
-        reply_to_client = f"{name}, здравствуйте! Заявку на {service_name.lower()} на {datetime_str} зафиксировала. Передала мастеру на сверку с бумажным блокнотом!"
+        reply_to_client = f"{name}, здравствуйте! Заявку на {service_name.lower()} на {datetime_str} зафиксировала. Передала мастеру — подтверждение придёт сюда."
     else:
-        reply_to_client = f"Зафиксировала заявку на {service_name.lower()} на {datetime_str}. Передала мастеру на сверку с бумажным блокнотом!"
+        reply_to_client = f"Зафиксировала заявку на {service_name.lower()} на {datetime_str}. Передала мастеру — подтверждение придёт сюда."
 
     return {
         "client_name": name,
@@ -305,7 +305,7 @@ def parse_booking_message(text: str, client_name: str = "", client_phone: str = 
     parsed_datetime = str(data.get("datetime_str") or "").strip() or "Завтра, 16:00"
     reply = str(data.get("reply_to_client") or "").strip() or (
         f"Зафиксировала заявку на {parsed_service} на {parsed_datetime}. "
-        f"Передала мастеру на сверку с бумажным блокнотом!"
+        f"Передала мастеру — подтверждение придёт сюда."
     )
 
     return {
@@ -424,19 +424,31 @@ def parse_expense_phrase(text: str) -> dict:
     return result
 
 
-def generate_client_reminder(client_name: str, days_ago: int, cycle_days: int, service_name: str = "маникюр",
-                             master_name: str = "Анна Nails", booking_url: str = "/c/anna") -> dict:
-    """Генерация тёплого напоминания клиенту. Возвращает {"message", "source"}."""
+# Чем заканчивается напоминание «пора вернуться» в разных нишах
+RETURN_HOOKS = {
+    "Маникюр": "самое время обновить покрытие",
+    "Брови и ресницы": "самое время обновить форму и цвет",
+    "Массаж": "самое время снова снять напряжение",
+    "Репетитор": "самое время продолжить занятия, пока материал свежий",
+    "Автосервис": "самое время заглянуть на плановое обслуживание",
+}
+
+
+def generate_client_reminder(client_name: str, days_ago: int, cycle_days: int, service_name: str = "",
+                             master_name: str = "", booking_url: str = "", niche: str = "") -> dict:
+    """Генерация тёплого напоминания клиенту «пора вернуться». Возвращает {"message", "source"}."""
+    visit = f" на «{service_name}»" if service_name else ""
     prompt = (
-        f"Напиши короткое, дружелюбное и вежливое сообщение для клиентки по имени {client_name}. "
-        f"Мастер: {master_name}. Прошло {days_ago} дней с прошлого визита на {service_name} "
-        f"(привычный цикл: {cycle_days} дней). Пригласи обновить покрытие, подчеркни заботу о здоровье ногтей "
-        f"и упомяни, что есть удобные окошки на этой неделе. Добавь ссылку {booking_url} для быстрой онлайн-записи. "
-        f"Максимум 3-4 предложения, тёплый тон с эмодзи."
+        f"Напиши короткое, дружелюбное и вежливое сообщение для клиента по имени {client_name}. "
+        f"Пишет мастер {master_name}, сфера: {niche or 'услуги частного мастера'}. "
+        f"С прошлого визита{visit} прошло {days_ago} дней (обычно клиент приходит раз в {cycle_days} дней). "
+        f"Мягко пригласи записаться снова и упомяни, что на этой неделе есть свободное время. "
+        f"В конце дай ссылку для онлайн-записи: {booking_url}. "
+        f"Не выдумывай скидок и фактов, которых нет. 2–3 предложения, тёплый тон, не больше одного эмодзи."
     )
     try:
         text = _giga_complete(
-            "Ты — заботливый помощник топ-мастера бьюти-сферы. Пиши естественные, вовлекающие тексты напоминаний без канцеляризмов.",
+            "Ты помогаешь частному мастеру писать клиентам. Пиши естественно, без канцелярита и без навязчивости.",
             prompt,
         )
         return {"message": text, "source": SOURCE_AI}
@@ -444,12 +456,12 @@ def generate_client_reminder(client_name: str, days_ago: int, cycle_days: int, s
         pass
 
     days_word = _plural(days_ago, "день", "дня", "дней")
+    hook = RETURN_HOOKS.get(niche, "самое время записаться снова")
     return {
         "message": (
-            f"{client_name}, добрый день! 💖 Это {master_name}.\n"
-            f"С нашего последнего визита на {service_name.lower()} прошло {days_ago} {days_word} — "
-            f"самое время обновить покрытие ✨\n"
-            f"На этой неделе есть удобные окошки, выбрать время онлайн: {booking_url}"
+            f"{client_name}, добрый день! Это {master_name}.\n"
+            f"С нашей последней встречи прошло {days_ago} {days_word} — {hook}.\n"
+            f"На этой неделе есть свободное время, выбрать удобное можно онлайн: {booking_url}"
         ),
         "source": SOURCE_TEMPLATE,
     }
@@ -494,7 +506,7 @@ def _fallback_business_audit(stats_data: dict) -> dict:
 def generate_business_audit(stats_data: dict) -> dict:
     """Бизнес-аудит через GigaChat с запасным шаблоном. Возвращает {"audit_text", "source"}."""
     prompt = (
-        "Проанализируй показатели частного бьюти-мастера за месяц:\n"
+        "Проанализируй показатели частного мастера за месяц:\n"
         f"Выручка: {stats_data.get('income', 0)} ₽, "
         f"Расходы: {stats_data.get('expense', 0)} ₽, "
         f"Чистая прибыль: {stats_data.get('profit', 0)} ₽, "
@@ -509,7 +521,7 @@ def generate_business_audit(stats_data: dict) -> dict:
         "Пиши кратко, по-русски, без воды и без выдуманных цифр."
     )
     try:
-        text = _giga_complete("Ты — финансовый аналитик бьюти-бизнеса.", prompt)
+        text = _giga_complete("Ты — финансовый аналитик малого бизнеса частных мастеров.", prompt)
         return {"audit_text": text, "source": SOURCE_AI}
     except GigaChatUnavailable:
         return _fallback_business_audit(stats_data)
@@ -559,27 +571,183 @@ def generate_conflict_reply(scenario_type: str, client_name: str, details: str =
         return result
 
 
-def _fallback_post_care_card(service_name: str, client_name: str) -> dict:
-    care_card_text = (
-        f"{client_name}, спасибо за визит на {service_name}! 💖\n"
-        f"Правила ухода в первые 48 часов:\n"
-        f"1. ✨ Не мочите ногти первые 6 часов после покрытия.\n"
-        f"2. 🧴 Используйте масло для кутикулы каждый день.\n"
-        f"3. 🧤 Носите перчатки при уборке и мытье посуды.\n"
-        f"Жду вас на коррекцию через 3-4 недели! ✨"
-    )
-    return {"care_card_text": care_card_text, "source": SOURCE_TEMPLATE}
+CARE_TIPS = {
+    "Маникюр": ("Правила ухода в первые 48 часов", [
+        "Не распаривайте руки и не ходите в баню первые сутки.",
+        "Наносите масло для кутикулы каждый вечер.",
+        "Уборку и мытьё посуды — в перчатках.",
+    ], "Жду вас на коррекцию через 3–4 недели!"),
+    "Брови и ресницы": ("Первые 24 часа", [
+        "Не мочите брови и ресницы и не трите глаза.",
+        "Откажитесь от сауны, бассейна и макияжа на этой зоне.",
+        "Спите на спине, чтобы не помять форму.",
+    ], "Жду вас на коррекцию через 4–6 недель!"),
+    "Массаж": ("Чтобы эффект продержался дольше", [
+        "Выпейте 1–2 стакана воды в ближайшие часы.",
+        "Не переохлаждайтесь и избегайте сквозняков сегодня.",
+        "Отложите интенсивную тренировку до завтра.",
+    ], "Для стойкого результата лучше прийти через 1–2 недели."),
+    "Репетитор": ("Чтобы материал закрепился", [
+        "Повторите конспект сегодня вечером — 10 минут.",
+        "Сделайте домашнее задание до следующего занятия.",
+        "Запишите вопросы, которые остались, — разберём их.",
+    ], "До встречи на следующем занятии!"),
+    "Автосервис": ("После обслуживания", [
+        "Первые 50–100 км проверьте, нет ли посторонних звуков.",
+        "Через пару дней посмотрите уровень масла и жидкостей.",
+        "Сохраните заказ-наряд — он пригодится при продаже авто.",
+    ], "Если что-то насторожит — напишите, посмотрим."),
+}
 
 
-def generate_post_care_card(service_name: str, client_name: str) -> dict:
-    """Памятка по уходу после процедуры. Возвращает {"care_card_text", "source"}."""
+def _fallback_post_care_card(service_name: str, client_name: str, niche: str = "") -> dict:
+    title, tips, closing = CARE_TIPS.get(niche, ("Несколько советов после визита", [
+        "Если появятся вопросы — напишите мастеру, ответим.",
+        "Запишите, что понравилось, чтобы в следующий раз повторить.",
+        "Следующий визит удобно выбрать онлайн по той же ссылке.",
+    ], "Будем рады видеть вас снова!"))
+    lines = [f"{client_name}, спасибо, что пришли на «{service_name}»!", f"{title}:"]
+    lines += [f"{i}. {tip}" for i, tip in enumerate(tips, 1)]
+    lines.append(closing)
+    return {"care_card_text": "\n".join(lines), "source": SOURCE_TEMPLATE}
+
+
+def generate_post_care_card(service_name: str, client_name: str, niche: str = "") -> dict:
+    """Памятка после визита с учётом ниши мастера. Возвращает {"care_card_text", "source"}."""
     prompt = (
-        f"Напиши короткую тёплую памятку клиенту {client_name} после процедуры {service_name}. "
-        "Включи: благодарность за визит и ровно 3 главных правила домашнего ухода в первые 48 часов "
-        "списком с эмодзи. До 400 символов."
+        f"Напиши короткую тёплую памятку клиенту {client_name} после услуги «{service_name}» "
+        f"(сфера мастера: {niche or 'услуги частного мастера'}). "
+        "Включи благодарность за визит и ровно 3 главных совета, что делать в ближайшие дни, нумерованным списком. "
+        "Советы должны подходить именно к этой услуге. Без выдуманных медицинских фактов. До 400 символов."
     )
     try:
-        text = _giga_complete("Ты — заботливый бьюти-мастер, пишешь клиентам.", prompt)
+        text = _giga_complete("Ты — заботливый частный мастер, пишешь клиентам после визита.", prompt)
         return {"care_card_text": text, "source": SOURCE_AI}
     except GigaChatUnavailable:
-        return _fallback_post_care_card(service_name, client_name)
+        return _fallback_post_care_card(service_name, client_name, niche)
+
+
+# =====================================================================
+# ДЕНЬ 6: ЗАПРОС КЛИЕНТА СВОИМИ СЛОВАМИ («маникюр завтра после 15»)
+# =====================================================================
+
+_WEEKDAY_STEMS = [("понедельник", 0), ("вторник", 1), ("сред", 2), ("четверг", 3), ("пятниц", 4), ("суббот", 5), ("воскресен", 6)]
+_MONTH_STEMS = [("январ", 1), ("феврал", 2), ("март", 3), ("апрел", 4), ("ма", 5), ("июн", 6), ("июл", 7), ("август", 8),
+                ("сентябр", 9), ("октябр", 10), ("ноябр", 11), ("декабр", 12)]
+
+
+def _stems(text: str) -> set:
+    """Основы слов длиной от 4 букв: «маникюра» и «маникюр» → «мани»…"""
+    words = re.findall(r"[а-яёa-z]+", text.lower().replace("ё", "е"))
+    return {w[:5] for w in words if len(w) >= 4}
+
+
+def match_service(text: str, services: list) -> Optional[int]:
+    """Индекс услуги, чьё название лучше всего совпадает с текстом, или None."""
+    asked = _stems(text)
+    best, best_score = None, 0
+    for i, name in enumerate(services):
+        score = len(asked & _stems(name))
+        if score > best_score:
+            best, best_score = i, score
+    return best
+
+
+def _fallback_free_request(text: str, services: list, today) -> dict:
+    from datetime import timedelta, date as _date
+    t = text.lower().replace("ё", "е")
+    result = {"service_index": match_service(t, services), "date": None, "time_from": None, "time_to": None}
+
+    # день
+    if "послезавтра" in t:
+        result["date"] = today + timedelta(days=2)
+    elif "завтра" in t:
+        result["date"] = today + timedelta(days=1)
+    elif "сегодня" in t:
+        result["date"] = today
+    else:
+        for stem, wd in _WEEKDAY_STEMS:
+            if re.search(r"\b" + stem, t):
+                result["date"] = today + timedelta(days=(wd - today.weekday()) % 7 or 7)
+                break
+    m = re.search(r"\b(\d{1,2})[./](\d{1,2})\b", t)
+    if m and not result["date"]:
+        try:
+            d = _date(today.year, int(m.group(2)), int(m.group(1)))
+            result["date"] = d if d >= today else _date(today.year + 1, d.month, d.day)
+        except ValueError:
+            pass
+    m = re.search(r"\b(\d{1,2})\s+([а-я]+)", t)
+    if m and not result["date"]:
+        for stem, month in _MONTH_STEMS:
+            if m.group(2).startswith(stem) and (stem != "ма" or m.group(2).startswith("мая")):
+                try:
+                    d = _date(today.year, month, int(m.group(1)))
+                    result["date"] = d if d >= today else _date(today.year + 1, month, d.day)
+                except ValueError:
+                    pass
+                break
+
+    # время
+    def hhmm(h, mnt="00"):
+        h = int(h)
+        if 1 <= h <= 8 and "утр" not in t:   # «после 3» почти всегда значит 15:00
+            h += 12
+        return f"{h:02d}:{mnt or '00'}" if 0 <= h <= 23 else None
+
+    m = re.search(r"(?:после|с|от)\s*(\d{1,2})(?:[:.](\d{2}))?", t)
+    if m:
+        result["time_from"] = hhmm(m.group(1), m.group(2))
+    m = re.search(r"(?:до|не позже)\s*(\d{1,2})(?:[:.](\d{2}))?", t)
+    if m:
+        result["time_to"] = hhmm(m.group(1), m.group(2))
+    m = re.search(r"(?:\bв|\bна|\bк)\s*(\d{1,2})[:.](\d{2})", t) or re.search(r"(?:\bв|\bк)\s*(\d{1,2})\b(?!\s*[./])", t)
+    if m and not result["time_from"] and not result["time_to"]:
+        exact = hhmm(m.group(1), m.group(2) if m.lastindex and m.lastindex >= 2 else "00")
+        result["time_from"] = exact
+        result["around"] = True
+    if not result["time_from"] and not result["time_to"]:
+        if "утр" in t:
+            result["time_from"], result["time_to"] = "08:00", "12:00"
+        elif "обед" in t or "днем" in t or "днём" in t:
+            result["time_from"], result["time_to"] = "12:00", "17:00"
+        elif "вечер" in t:
+            result["time_from"] = "17:00"
+    return result
+
+
+def parse_free_request(text: str, services: list, today) -> dict:
+    """Разбирает запрос клиента: какая услуга, какой день, в какое время.
+    Возвращает {"service_index", "date" (date|None), "time_from", "time_to", "source"}.
+    GigaChat получает список услуг мастера и сегодняшнюю дату; при сбое работает шаблон."""
+    from datetime import date as _date
+    numbered = "\n".join(f"{i}. {name}" for i, name in enumerate(services))
+    weekday = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"][today.weekday()]
+    prompt = (
+        f"Сегодня {today.strftime('%d.%m.%Y')}, {weekday}.\n"
+        f"Услуги мастера:\n{numbered}\n\n"
+        f"Запрос клиента: «{text}»\n\n"
+        "Верни только JSON: {\"service_index\": номер услуги из списка или null, "
+        "\"date\": \"ДД.ММ.ГГГГ\" или null, \"time_from\": \"ЧЧ:ММ\" или null, \"time_to\": \"ЧЧ:ММ\" или null, \"around\": true или false}. "
+        "«после 15» → time_from 15:00; «до 12» → time_to 12:00; «в 14» или «к 14» → time_from 14:00 и around true; "
+        "«утром» → 08:00–12:00, «днём» → 12:00–17:00, «вечером» → time_from 17:00. Ничего не выдумывай."
+    )
+    try:
+        data = _extract_json(_giga_complete("Ты извлекаешь параметры записи к мастеру. Отвечаешь только JSON.", prompt))
+        idx = data.get("service_index")
+        idx = int(idx) if isinstance(idx, (int, float, str)) and str(idx).isdigit() and int(idx) < len(services) else None
+        day = None
+        if data.get("date"):
+            try:
+                day = _date(*reversed([int(x) for x in str(data["date"]).split(".")]))
+            except (ValueError, TypeError):
+                day = None
+        def clean_time(v):
+            return v if isinstance(v, str) and re.fullmatch(r"\d{2}:\d{2}", v) else None
+        return {"service_index": idx, "date": day, "time_from": clean_time(data.get("time_from")),
+                "time_to": clean_time(data.get("time_to")), "around": bool(data.get("around")), "source": SOURCE_AI}
+    except (GigaChatUnavailable, ValueError) as e:
+        logger.warning(f"Запрос клиента через GigaChat не разобран, используем шаблон: {e}")
+        result = _fallback_free_request(text, services, today)
+        result["source"] = SOURCE_TEMPLATE
+        return result

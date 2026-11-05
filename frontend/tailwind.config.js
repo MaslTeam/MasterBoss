@@ -1,4 +1,5 @@
 /** @type {import('tailwindcss').Config} */
+// Палитра дизайна v2: чёрный, жёлтый, белый + серебро и тёплые нейтральные
 export default {
   content: [
     "./index.html",
@@ -7,31 +8,30 @@ export default {
   theme: {
     extend: {
       colors: {
-        background: '#F8FAFC',
-        brand: {
-          50: '#F5F3FF',
-          100: '#EDE9FE',
-          200: '#DDD6FE',
-          500: '#8B5CF6',
-          600: '#7C3AED',
-          700: '#6D28D9',
-        },
-        profit: {
-          50: '#ECFDF5',
-          100: '#D1FAE5',
-          500: '#10B981',
-          600: '#059669',
-          700: '#047857',
-        }
+        ink: '#121212',
+        ink2: '#2A2A28',
+        ink3: '#3A3A38',
+        sun: '#FFC531',
+        sunsoft: '#FFF4D1',
+        sunpale: '#FFE08A',
+        sundeep: '#6B4E00',
+        cream: '#F7F6F2',
+        mist: '#F5F4F0',
+        sand: '#ECEAE4',
+        silver: '#C4C7CC',
+        silverlight: '#ECEDEF',
+        silverline: '#D5D7DA',
+        graphite: '#6E7177',
+        muted: '#6B6862',
+        body: '#4A4843',
+        onink: '#C9C6BE',
+        nude: '#F4E6DA',
+        danger: '#B3261E',
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
+        sans: ['Manrope', 'system-ui', '-apple-system', 'sans-serif'],
+        display: ['Unbounded', 'Manrope', 'sans-serif'],
       },
-      boxShadow: {
-        'soft': '0 2px 15px -3px rgba(0, 0, 0, 0.07), 0 4px 6px -2px rgba(0, 0, 0, 0.03)',
-        'card': '0 4px 20px -2px rgba(15, 23, 42, 0.06)',
-        'modal': '0 20px 40px -15px rgba(0, 0, 0, 0.25)',
-      }
     },
   },
   plugins: [],

@@ -2,47 +2,64 @@
 @tailwind components;
 @tailwind utilities;
 
-@layer base {
-  html {
-    font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    -webkit-tap-highlight-color: transparent;
-  }
-  
-  body {
-    background-color: #F8FAFC;
-    color: #1E293B;
-    overflow-x: hidden;
-  }
+/* ===== Базовые стили ===== */
+html {
+  font-family: 'Manrope', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+body {
+  margin: 0;
+  background: #ffffff;
+  color: #121212;
+  overflow-x: hidden;
 }
 
-/* Custom smooth scrollbar for horizontal or list views */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+/* ===== Анимации (дизайн v2) ===== */
+@keyframes mbRise { from { opacity: 0; transform: translateY(16px) } to { opacity: 1; transform: none } }
+@keyframes mbFade { from { opacity: 0 } to { opacity: 1 } }
+@keyframes mbSheet { from { transform: translateY(100%) } to { transform: none } }
+@keyframes mbPop { 0% { opacity: 0; transform: scale(.6) } 70% { transform: scale(1.06) } 100% { opacity: 1; transform: scale(1) } }
+@keyframes mbFloat { 0%, 100% { transform: translateY(0) } 50% { transform: translateY(-9px) } }
+@keyframes mbMorph {
+  0%, 100% { border-radius: 58% 42% 46% 54% / 52% 44% 56% 48% }
+  50% { border-radius: 46% 54% 56% 44% / 44% 56% 46% 54% }
 }
+@keyframes mbSpin { to { transform: rotate(360deg) } }
+@keyframes mbToast { from { opacity: 0; transform: translate(-50%, -12px) } to { opacity: 1; transform: translate(-50%, 0) } }
 
-::-webkit-scrollbar-track {
-  background: #F1F5F9;
+/* Плавные состояния для всего интерактива */
+button, a, input, textarea, select {
+  transition: background-color .25s ease, color .25s ease, border-color .25s ease,
+    box-shadow .3s ease, transform .25s cubic-bezier(.2, .8, .2, 1), opacity .25s ease;
 }
+button:not(:disabled):hover, a[href].mb-lift:hover { transform: translateY(-2px); }
+button:not(:disabled):active, a[href].mb-lift:active { transform: scale(.97); }
+button:disabled { cursor: default; opacity: .6; }
+input:focus, textarea:focus, select:focus { outline: none; box-shadow: 0 0 0 3px rgba(255, 197, 49, .55); }
+:focus-visible { outline: 2px solid #121212; outline-offset: 3px; }
+/* у полей ввода — жёлтое кольцо вместо обводки */
+input:focus-visible, textarea:focus-visible, select:focus-visible { outline: none; }
 
-::-webkit-scrollbar-thumb {
-  background: #CBD5E1;
-  border-radius: 9999px;
-}
+.mb-in { animation: mbRise .6s cubic-bezier(.2, .8, .2, 1) both; }
+.mb-pop { animation: mbPop .55s cubic-bezier(.2, .8, .2, 1) both; }
+.mb-fade { animation: mbFade .35s ease both; }
+.mb-sheet { animation: mbSheet .45s cubic-bezier(.2, .8, .2, 1) both; }
+.mb-float { animation: mbFloat 6s ease-in-out infinite; }
+.mb-morph { animation: mbMorph 14s ease-in-out infinite; }
+.mb-spin { animation: mbSpin .8s linear infinite; }
+.mb-toast { animation: mbToast .35s cubic-bezier(.2, .8, .2, 1) both; }
+.mb-d1 { animation-delay: .06s } .mb-d2 { animation-delay: .12s } .mb-d3 { animation-delay: .18s }
+.mb-d4 { animation-delay: .24s } .mb-d5 { animation-delay: .3s }
 
-::-webkit-scrollbar-thumb:hover {
-  background: #94A3B8;
-}
+.mb-card { transition: transform .35s cubic-bezier(.2, .8, .2, 1), box-shadow .35s ease; }
+.mb-card:hover { transform: translateY(-6px); box-shadow: 0 20px 44px rgba(18, 18, 18, .14); }
+.mb-arrow { transition: transform .35s cubic-bezier(.2, .8, .2, 1); }
+.mb-card:hover .mb-arrow { transform: rotate(-45deg); }
 
-@keyframes pulseGlow {
-  0%, 100% {
-    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.4);
-  }
-  50% {
-    box-shadow: 0 0 0 6px rgba(245, 158, 11, 0);
-  }
-}
+/* Скролл без полосы для горизонтальных лент */
+.mb-noscroll { scrollbar-width: none; }
+.mb-noscroll::-webkit-scrollbar { display: none; }
 
-.pulse-glow {
-  animation: pulseGlow 2s infinite;
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
 }
