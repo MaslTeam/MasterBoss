@@ -219,6 +219,11 @@ class ChatMessageRequest(BaseModel):
     ref: Optional[str] = Field(default=None, max_length=40, description="Метка источника из ссылки ?from=insta")
 
 
+class FreeRequest(BaseModel):
+    """Запрос клиента своими словами: «маникюр завтра после 15»"""
+    text: str = Field(..., min_length=3, max_length=300)
+
+
 class ChatMessageResponse(BaseModel):
     """Схема ответа бота на сообщение клиента в чате"""
     reply_text: str

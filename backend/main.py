@@ -37,6 +37,7 @@ from schemas import (
     StatsResponse,
     ChatMessageRequest,
     ChatMessageResponse,
+    FreeRequest,
     ServiceResponse,
     ServiceCreate,
     ServiceUpdate,
@@ -98,6 +99,17 @@ def _ensure_sqlite_columns():
 _ensure_sqlite_columns()
 
 
+def _initial_pin() -> str:
+    """PIN первого мастера anna. Берётся из INITIAL_MASTER_PIN; если не задан — случайный, печатается в лог."""
+    pin = os.getenv("INITIAL_MASTER_PIN", "").strip()
+    if pin:
+        return pin
+    import secrets as _secrets
+    pin = f"{_secrets.randbelow(900000) + 100000}"
+    print(f"[Init] Создан мастер anna. PIN: {pin}  (задайте INITIAL_MASTER_PIN, чтобы выбрать свой)", flush=True)
+    return pin
+
+
 def _init_default_data():
     """Создает чистый базовый профиль мастера 'anna' со стартовыми услугами, если БД пуста"""
     db = SessionLocal()
@@ -110,7 +122,7 @@ def _init_default_data():
                 niche="Маникюр",
                 trial_active=True,
                 default_deposit=500,
-                pin_code="1234"
+                pin_code=auth.hash_pin(_initial_pin())
             )
             db.add(m)
             db.commit()
@@ -137,7 +149,7 @@ _init_default_data()
 app = FastAPI(
     title="МастерБосс API",
     description="REST API бэкенд для сервиса МастерБосс (Web-PWA для частных мастеров)",
-    version="1.2.0"
+    version="1.3.0"
 )
 
 # Проверка токена для всех /api/app/* (кроме публичных адресов клиентской страницы)
@@ -506,7 +518,7 @@ def health_check():
     return {
         "status": "ok",
         "service": "MasterBoss Backend API",
-        "version": "1.2.0",
+        "version": "1.3.0",
         "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "timezone": time.strftime("%Z"),
     }
@@ -528,7 +540,7 @@ def root():
     return {
         "status": "ok",
         "service": "MasterBoss Backend API",
-        "version": "1.2.0"
+        "version": "1.3.0"
     }
 
 
@@ -1087,6 +1099,83 @@ def get_available_slots(
     return generate_free_slots(db, master, duration)
 
 
+@app.post(
+    "/api/master/{slug}/parse-request",
+    tags=["Bookings"],
+    summary="Запрос клиента своими словами → услуга, день и подходящие окна"
+)
+def parse_free_request(slug: str, payload: FreeRequest, db: Session = Depends(get_db)):
+    """«Маникюр завтра после 15» → услуга из прайса мастера, день, время и до 6 свободных окон.
+    Ничего не бронирует: клиент выбирает окно сам и подтверждает запись обычной кнопкой."""
+    master = db.query(Master).filter(Master.slug == slug).first()
+    if not master:
+        raise HTTPException(status_code=404, detail="Мастер не найден")
+    services = [s for s in master.services if s.is_active]
+    if not services:
+        raise HTTPException(status_code=400, detail="У мастера пока нет услуг")
+
+    today = datetime.now().date()
+    parsed = ai_parser.parse_free_request(payload.text.strip(), [s.name for s in services], today)
+    idx = parsed.get("service_index")
+    service = services[idx] if isinstance(idx, int) and 0 <= idx < len(services) else None
+    day = parsed.get("date")
+    time_from, time_to = parsed.get("time_from"), parsed.get("time_to")
+
+    around = bool(parsed.get("around")) and time_from and not time_to
+    slots = []
+    if service and around:
+        # «в 12» — окна этого дня (или ближайших) не дальше 2 часов от желаемого, ближние первыми
+        want = _to_minutes(time_from)
+        near = []
+        for slot in generate_free_slots(db, master, service.duration_min or DEFAULT_DURATION_MIN):
+            slot_dt = parse_datetime_str(slot)
+            if not slot_dt or (day and slot_dt.date() != day):
+                continue
+            diff = abs(slot_dt.hour * 60 + slot_dt.minute - want)
+            if diff <= 120:
+                near.append((slot_dt.date(), diff, slot))
+        slots = [x[2] for x in sorted(near)[:6]]
+    elif service:
+        for slot in generate_free_slots(db, master, service.duration_min or DEFAULT_DURATION_MIN):
+            slot_dt = parse_datetime_str(slot)
+            if not slot_dt:
+                continue
+            if day and slot_dt.date() != day:
+                continue
+            hm = slot_dt.strftime("%H:%M")
+            if time_from and hm < time_from:
+                continue
+            if time_to and hm > time_to:
+                continue
+            slots.append(slot)
+            if len(slots) >= 6:
+                break
+
+    # Человеческая расшифровка: «Маникюр с покрытием · чт 05.11 · после 15:00»
+    parts = [service.name if service else "услугу выберите из списка"]
+    if day:
+        parts.append(f"{WEEKDAY_SHORT_RU[day.weekday()]} {day.strftime('%d.%m')}")
+    if around:
+        parts.append(f"около {time_from}")
+    elif time_from and time_to:
+        parts.append(f"с {time_from} до {time_to}")
+    elif time_from:
+        parts.append(f"после {time_from}")
+    elif time_to:
+        parts.append(f"до {time_to}")
+
+    return {
+        "service_id": service.id if service else None,
+        "date": day.strftime("%d.%m") if day else None,
+        "time_from": time_from,
+        "time_to": time_to,
+        "around": bool(around),
+        "slots": slots,
+        "summary": " · ".join(parts),
+        "source": parsed.get("source", "template"),
+    }
+
+
 @app.get(
     "/api/booking/{booking_id}/status",
     response_model=BookingStatusResponse,
@@ -1586,15 +1675,15 @@ def parse_expense_with_ai(payload: AIExpenseRequest):
 )
 def generate_reminder_with_ai(payload: AIReminderRequest, master_id: int = Depends(auth_master_id), db: Session = Depends(get_db)):
     """
-    Генерирует персональный текст сообщения для WhatsApp/SMS,
-    приглашающий постоянного клиента обновить покрытие.
+    Текст напоминания «пора вернуться» для постоянного клиента: мастер отправляет его
+    сам через «Копировать», Telegram или MAX.
     """
     client = db.query(Client).filter(Client.id == payload.client_id, Client.master_id == master_id).first()
     if not client:
         raise HTTPException(status_code=404, detail="Клиент не найден")
     phone = client.phone
     master = client.master
-    master_slug = master.slug if master else "anna"
+    master_slug = master.slug
     # PUBLIC_URL (например https://masterboss.onrender.com) делает ссылку кликабельной в мессенджере
     booking_url = f"{os.getenv('PUBLIC_URL', '').rstrip('/')}/c/{master_slug}"
 
@@ -1602,9 +1691,10 @@ def generate_reminder_with_ai(payload: AIReminderRequest, master_id: int = Depen
         client_name=payload.client_name,
         days_ago=payload.days_ago,
         cycle_days=payload.cycle_days,
-        service_name=payload.service_name or "маникюр",
-        master_name=master.name if master else "Анна Nails",
-        booking_url=booking_url
+        service_name=payload.service_name or "",
+        master_name=master.name,
+        booking_url=booking_url,
+        niche=master.niche or ""
     )
 
     return AIReminderResponse(
@@ -1774,7 +1864,7 @@ def handle_chat_message(payload: ChatMessageRequest, db: Session = Depends(get_d
         ).update({"client_id": client.id})
         db.commit()
 
-    reply_text = f"{name}, заявка на {service_name.lower()} на {datetime_str} зафиксирована! Передала мастеру на сверку с бумажным блокнотом."
+    reply_text = f"{name}, заявка на «{service_name}» на {datetime_str} отправлена мастеру. Подтверждение появится на этой странице."
 
     return ChatMessageResponse(
         reply_text=reply_text,
@@ -2178,7 +2268,7 @@ def waitlist_check(slug: str = Query(...), db: Session = Depends(get_db)):
     "/api/app/booking/{booking_id}/reject",
     response_model=BookingResponse,
     tags=["Bookings"],
-    summary="Отклонить бронь (Занято в блокноте ❌)"
+    summary="Отклонить заявку: мастер не может в это время"
 )
 def reject_booking(booking_id: int, master_id: int = Depends(auth_master_id), db: Session = Depends(get_db)):
     """Переводит статус брони в 'cancelled' и уведомляет подписчиков waitlist"""
@@ -2327,7 +2417,8 @@ def send_care_card(booking_id: int, master_id: int = Depends(auth_master_id), db
     client_name = booking.client.name if booking.client else "Клиент"
     service_name = booking.service_name
 
-    result = ai_parser.generate_post_care_card(service_name=service_name, client_name=client_name)
+    niche = booking.master.niche if booking.master else ""
+    result = ai_parser.generate_post_care_card(service_name=service_name, client_name=client_name, niche=niche)
     card_text = result.get("care_card_text", "")
 
     return CareCardResponse(success=True, card_text=card_text, source=result.get("source", "template"))

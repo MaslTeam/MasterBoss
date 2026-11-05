@@ -60,6 +60,11 @@ export default function ClientChat() {
   const [pushOn, setPushOn] = useState(Boolean(saved.pushOn))
   const [pushLoading, setPushLoading] = useState(false)
   const [cancelAsk, setCancelAsk] = useState(false)
+  // День 6: запрос своими словами
+  const [freeText, setFreeText] = useState('')
+  const [parsing, setParsing] = useState(false)
+  const [pref, setPref] = useState(null)        // разобранный запрос: { date, time_from, time_to, around, slots, summary }
+  const [prefNote, setPrefNote] = useState('')  // подсказка на шаге 2: что подобрали
 
   // Сохраняем прогресс, чтобы перезагрузка страницы ничего не теряла
   useEffect(() => {
@@ -121,6 +126,50 @@ export default function ClientChat() {
     }
     if (slot && !days.some(d => d.slots.includes(slot))) setSlot('')
   }, [days]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Подбираем день и время по запросу клиента своими словами
+  useEffect(() => {
+    if (!pref || !days.length) return
+    const all = days.flatMap(d => d.slots)
+    const inWindow = (s) => {
+      const { day: d, time } = splitSlot(s)
+      if (pref.date && d !== pref.date) return false
+      if (pref.time_from && !pref.around && time < pref.time_from) return false
+      if (pref.time_to && time > pref.time_to) return false
+      return true
+    }
+    const best = (pref.slots || []).find(s => all.includes(s)) || all.find(inWindow)
+    if (best) {
+      setDay(splitSlot(best).day)
+      setSlot(best)
+      const when = (pref.summary || '').split(' · ').slice(1).join(' · ')
+      setPrefNote(`Подобрали по запросу: ${[service?.name, when].filter(Boolean).join(' · ')}`)
+    } else {
+      if (pref.date && days.some(d => d.key === pref.date)) setDay(pref.date)
+      setPrefNote('На это время свободных окон нет — показали ближайшие')
+    }
+    setPref(null)
+  }, [pref, days]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const parseFreeText = async (e) => {
+    e.preventDefault()
+    if (freeText.trim().length < 3) return
+    setParsing(true)
+    try {
+      const res = await publicJson(`/api/master/${slug}/parse-request`, { method: 'POST', body: { text: freeText.trim() } })
+      setPref(res)
+      if (res.service_id) {
+        setServiceId(res.service_id)
+        setStep(2)
+      } else {
+        toast('Не поняли, какая услуга — выберите её в списке, время подберём', 'error')
+      }
+    } catch (err) {
+      toast(err.message, 'error')
+    } finally {
+      setParsing(false)
+    }
+  }
 
   const daySlots = days.find(d => d.key === day)?.slots || []
   const phoneDigits = phone.replace(/\D/g, '')
@@ -281,6 +330,28 @@ export default function ClientChat() {
                 </button>
               )
             })}
+
+            {master.services.length > 0 && (
+              <form onSubmit={parseFreeText} className="mt-3 mb-in mb-d5">
+                <div className="flex items-center gap-3 mx-1 mb-2 text-xs font-extrabold text-graphite uppercase tracking-[0.12em]">
+                  или своими словами <span className="flex-1 h-px bg-silver" />
+                </div>
+                <div className="pl-[18px] pr-1.5 py-1.5 rounded-full bg-white border-[1.5px] border-ink flex items-center gap-2.5 focus-within:ring-[3px] focus-within:ring-sun/60 transition-shadow">
+                  <label htmlFor="free-text" className="sr-only">Напишите, что и когда удобно</label>
+                  <input
+                    id="free-text"
+                    value={freeText}
+                    onChange={e => setFreeText(e.target.value)}
+                    maxLength={300}
+                    placeholder={`«${(master.services[0]?.name || 'запись').toLowerCase()} завтра после 15»`}
+                    className="flex-1 min-w-0 border-0 p-0 text-sm bg-transparent focus:shadow-none"
+                  />
+                  <button type="submit" aria-label="Подобрать время" disabled={parsing || freeText.trim().length < 3} className="w-11 h-11 shrink-0 rounded-full bg-ink text-sun flex items-center justify-center">
+                    {parsing ? <Spinner /> : <Icon name="spark" size={18} stroke={2} />}
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
 
           <Footer>
@@ -295,7 +366,7 @@ export default function ClientChat() {
       {step === 2 && service && (
         <>
           <div className="px-5 pt-[22px] flex items-center gap-3">
-            <button type="button" aria-label="Назад" onClick={() => setStep(1)} className="w-11 h-11 rounded-full bg-mist flex items-center justify-center hover:bg-sand"><Icon name="back" stroke={2} /></button>
+            <button type="button" aria-label="Назад" onClick={() => { setStep(1); setPrefNote('') }} className="w-11 h-11 rounded-full bg-mist flex items-center justify-center hover:bg-sand"><Icon name="back" stroke={2} /></button>
             <div className="flex-1 min-w-0">
               <div className="font-extrabold text-[15px] truncate">{master.name}</div>
               <div className="text-xs text-muted">Шаг 2 из 3</div>
@@ -312,6 +383,14 @@ export default function ClientChat() {
           </div>
 
           <h1 className="mx-6 mt-6 mb-3.5 font-display font-bold text-2xl tracking-[-0.03em]">Когда удобно?</h1>
+
+          {prefNote && (
+            <div className="mx-5 mb-3.5 px-4 py-3 rounded-[18px] bg-white border border-silver border-l-4 border-l-sun flex items-start gap-2.5 text-[13px] mb-fade" role="status">
+              <Icon name="spark" size={16} className="mt-0.5 shrink-0" />
+              <span className="flex-1">{prefNote}</span>
+              <button type="button" aria-label="Скрыть подсказку" onClick={() => setPrefNote('')} className="shrink-0 -m-1 p-1"><Icon name="close" size={14} stroke={2.2} /></button>
+            </div>
+          )}
 
           {slots === null ? (
             <div className="py-10 flex justify-center text-muted"><Spinner /></div>
