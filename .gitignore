@@ -60,3 +60,7 @@ Thumbs.db
 *.njsproj
 *.sln
 *.sw?
+
+# Local runtime
+cloudflared.exe
+logs/

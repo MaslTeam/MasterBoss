@@ -2,12 +2,10 @@ import React, { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Icon, Logo, Blob, Dot } from '../components/ui'
 import { API_BASE, getSession } from '../api'
-import { STARTER, CARD_TONES, NICHES } from '../utils/niches'
-import { rub, num } from '../utils/format'
+import { NICHES } from '../utils/niches'
+import { num } from '../utils/format'
 
-// Отзыв пилотного мастера: впишите, когда появится настоящий. Пока null — блок не показывается.
-const PILOT_QUOTE = null // { text: '…', author: 'Имя', role: 'Маникюр, Москва' }
-// Контакт команды для блока «Остались вопросы?». Пусто — блок ведёт в демо.
+// Контакт команды для блока «Остались вопросы?». Пусто — блок ведёт в регистрацию.
 const TEAM_CONTACT = '' // например 'https://t.me/masterboss_team'
 
 function SectionRule({ num: n, label }) {
@@ -39,15 +37,14 @@ const STEPS = [
 ]
 
 const PLANS = [
-  { name: 'Старт', price: '0 ₽', items: ['Страница записи', 'До 30 записей в месяц', 'Касса и напоминания'], cta: 'Начать бесплатно' },
-  { name: 'Мастер', price: '790 ₽', items: ['Без лимита записей', 'ИИ-помощник GigaChat', 'Аудит бизнеса за месяц'], cta: 'Попробовать', featured: true },
-  { name: 'Студия', price: '1 490 ₽', items: ['До 3 мастеров', 'Общая касса', 'Приоритетная поддержка'], cta: 'Подключить' },
+  { name: 'Старт', price: '0 ₽', items: ['Страница записи', 'До 30 записей в месяц', 'Касса и напоминания'], cta: 'Создать страницу' },
+  { name: 'Мастер', price: '790 ₽', items: ['Без лимита записей', 'ИИ-помощник GigaChat', 'Аудит бизнеса за месяц'], cta: 'Создать страницу', featured: true },
+  { name: 'Студия', price: '1 490 ₽', items: ['До 3 мастеров', 'Общая касса', 'Приоритетная поддержка'], cta: 'Создать страницу' },
 ]
 
 export default function Landing() {
   const navigate = useNavigate()
   const loggedIn = Boolean(getSession().token)
-  const [niche, setNiche] = useState(0)
   const [pilot, setPilot] = useState(null)
   const [quickName, setQuickName] = useState('')
   const [quickNiche, setQuickNiche] = useState(NICHES[0])
@@ -67,8 +64,6 @@ export default function Landing() {
     navigate(`/register?${params.toString()}`)
   }
 
-  const current = STARTER[niche]
-
   return (
     <div className="bg-white text-ink overflow-hidden">
       {/* ШАПКА */}
@@ -76,11 +71,11 @@ export default function Landing() {
         <Logo />
         <nav className="hidden md:flex gap-7 text-[15px] font-semibold">
           <a href="#how" className="text-body hover:text-ink no-underline">Как это работает</a>
-          <a href="#niches" className="text-body hover:text-ink no-underline">Для кого</a>
+          <a href="#audience" className="text-body hover:text-ink no-underline">Для кого</a>
           <a href="#pricing" className="text-body hover:text-ink no-underline">Тарифы</a>
         </nav>
-        <div className="flex gap-2.5 items-center">
-          <Link to="/app" className="mb-lift px-[18px] py-[11px] rounded-full font-bold text-sm text-ink no-underline border border-silver hover:border-ink">
+        <div className="flex gap-4 items-center">
+          <Link to="/app" className="font-bold text-sm text-body no-underline hover:text-ink">
             {loggedIn ? 'Кабинет' : 'Войти'}
           </Link>
           <Link to="/register" className="mb-lift hidden sm:inline-flex px-5 py-3 rounded-full font-bold text-sm text-white bg-ink no-underline hover:bg-black">
@@ -103,11 +98,26 @@ export default function Landing() {
             <Link to="/register" className="mb-lift inline-flex gap-2.5 items-center px-7 py-[18px] rounded-full bg-sun text-ink font-extrabold text-base no-underline hover:bg-[#F5B800]">
               Создать страницу бесплатно <Icon name="arrow" size={18} stroke={2.2} />
             </Link>
-            <Link to="/demo" className="px-2 py-[18px] font-bold text-base text-ink underline underline-offset-[5px] decoration-2 hover:decoration-sun">
-              Открыть демо-кабинет
-            </Link>
           </div>
           <p className="m-0 text-[13px] text-muted">Без карты и договора. Страница готова за минуту.</p>
+          <div className="rounded-[20px] border border-silverline bg-white px-5 py-4 shadow-[0_10px_30px_rgba(18,18,18,0.05)]">
+            <div className="text-[10px] font-extrabold uppercase tracking-[0.16em] text-graphite mb-3">Факты о продукте</div>
+            <div className="flex flex-wrap gap-x-7 gap-y-3">
+              {[
+                ['clock', '60 сек', 'до готовой страницы'],
+                ['wallet', '0 ₽', 'старт без карты'],
+                ['spark', 'GigaChat', 'ИИ-помощник внутри'],
+              ].map(([icon, value, label]) => (
+                <div key={value} className="flex items-center gap-2.5">
+                  <span className="w-9 h-9 shrink-0 rounded-full bg-sunsoft flex items-center justify-center"><Icon name={icon} size={17} /></span>
+                  <div>
+                    <div className="font-display font-bold text-[19px] leading-none">{value}</div>
+                    <div className="text-[11px] text-muted mt-0.5">{label}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
 
         <div className="flex-[1_1_520px] min-w-0 relative h-[540px] sm:h-[620px] mb-in mb-d2">
@@ -160,52 +170,46 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* 02 НИШИ */}
-      <section id="niches" className="max-w-[1200px] mx-auto px-4 sm:px-8 pt-24 sm:pt-32">
-        <SectionRule num="02" label="Ниши" />
-        <div className="flex justify-between items-end gap-6 flex-wrap mb-7">
-          <h2 className="m-0 font-display font-bold text-[28px] sm:text-[42px] tracking-[-0.03em] leading-[1.1] max-w-[620px]">Прайс готов с первой минуты</h2>
-          <div className="flex gap-2 flex-wrap" role="tablist" aria-label="Ниша">
-            {STARTER.map((n, i) => (
-              <button
-                key={n.name}
-                type="button"
-                role="tab"
-                aria-selected={i === niche}
-                onClick={() => setNiche(i)}
-                className={`px-[18px] py-[11px] rounded-full font-bold text-sm border ${i === niche ? 'bg-ink text-white border-ink' : 'bg-white text-ink border-silver hover:border-ink'}`}
-              >
-                {n.name}
-              </button>
-            ))}
+      {/* 02 ДЛЯ КОГО */}
+      <section id="audience" className="max-w-[1200px] mx-auto px-4 sm:px-8 pt-24 sm:pt-32">
+        <SectionRule num="02" label="Для кого" />
+        <div className="flex justify-between items-end gap-6 flex-wrap mb-9">
+          <h2 className="m-0 font-display font-bold text-[28px] sm:text-[42px] tracking-[-0.03em] leading-[1.1] max-w-[720px]">Для кого строим и как работает «Блокнот в 1 клик»</h2>
+          <p className="m-0 max-w-[360px] text-muted text-[15px] leading-relaxed">Не абстрактные ниши, а конкретный мастер с его привычками, загрузкой и задачами.</p>
+        </div>
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(300px,1fr))] gap-4 items-stretch">
+          <div className="bg-ink text-white rounded-[30px] p-7 sm:p-9 flex flex-col gap-7">
+            <div>
+              <div className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-sun">Конкретный пользователь</div>
+              <div className="mt-2 font-display font-bold text-[30px] sm:text-[34px] leading-tight tracking-[-0.02em]">Екатерина, 27 лет</div>
+              <div className="mt-1.5 text-[15px] text-onink">Частный мастер маникюра, самозанятая</div>
+            </div>
+            <div className="flex flex-col gap-5 text-[15px] leading-relaxed">
+              <p className="m-0"><span className="font-extrabold text-white">Ситуация:</span> <span className="text-onink">принимает 5–6 клиентов в день одна в арендованном кабинете. Средний чек — 2 200 ₽.</span></p>
+              <p className="m-0"><span className="font-extrabold text-white">Привычка:</span> <span className="text-onink">ведёт расписание в бумажном ежедневнике и не готова разбираться в тяжёлых таблицах.</span></p>
+              <p className="m-0"><span className="font-extrabold text-white">Боль:</span> <span className="text-onink">теряет до 6 заявок в неделю и 3–4 окна в месяц из-за неявок без предупреждения.</span></p>
+            </div>
+          </div>
+          <div className="bg-white border border-silver rounded-[30px] p-7 sm:p-9">
+            <h3 className="m-0 font-extrabold text-[19px] sm:text-[21px] tracking-[-0.01em]">Наше решение: автоматизация без ломки привычек</h3>
+            <div className="mt-6 flex flex-col gap-5">
+              {[
+                ['Карточка в 1 тап', 'Мастер сверяется с блокнотом и жмёт «Подтвердить» или «Отклонить» — без переписок и таблиц.'],
+                ['Клиент видит только свободные окна', 'Запись сама учитывает длительность услуги и уже занятое время.'],
+                ['Защита от пустых окон', 'Автонапоминания перед визитом и лист ожидания на освободившееся время.'],
+                ['Удержание и отчётность', 'Напоминание, когда клиенту пора вернуться, и учёт чистой прибыли в кабинете.'],
+              ].map(([title, text]) => (
+                <div key={title} className="flex gap-3.5">
+                  <span className="mt-0.5 w-[26px] h-[26px] shrink-0 rounded-full bg-sun flex items-center justify-center"><Icon name="check" size={14} stroke={3} /></span>
+                  <div>
+                    <div className="font-extrabold text-[15px]">{title}</div>
+                    <div className="mt-1 text-sm leading-relaxed text-muted">{text}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
-        <div className="grid grid-cols-[repeat(auto-fit,minmax(240px,1fr))] gap-4">
-          {current.items.map(([name, duration, price], i) => {
-            const tone = CARD_TONES[i]
-            const accent = i === 0 ? '#FFC531' : i === 1 ? '#121212' : current.colors[i]
-            return (
-              <div
-                key={`${current.name}-${name}`}
-                className={`mb-card mb-in mb-d${i + 1} rounded-[28px] p-[22px] min-h-[240px] flex flex-col gap-4 border`}
-                style={{ background: tone.bg, color: tone.fg, borderColor: tone.border }}
-              >
-                <div className="flex justify-between items-center">
-                  <span className="w-[34px] h-1.5 rounded-full" style={{ background: accent }} />
-                  <span className="px-3 py-[7px] rounded-full text-xs font-extrabold" style={{ background: tone.chip }}>{duration} мин</span>
-                </div>
-                <div className="mt-auto font-extrabold text-[19px] leading-tight tracking-[-0.01em]">{name}</div>
-                <div className="flex justify-between items-center pt-3.5 border-t" style={{ borderColor: tone.line }}>
-                  <span className="font-display font-bold text-[22px] tracking-[-0.02em]">{rub(price)}</span>
-                  <span className="mb-arrow w-10 h-10 rounded-full flex items-center justify-center" style={{ background: tone.btnBg, color: tone.btnFg }}>
-                    <Icon name="arrow" size={18} stroke={2.2} />
-                  </span>
-                </div>
-              </div>
-            )
-          })}
-        </div>
-        <p className="mt-[18px] mb-0 text-sm text-muted">Это стартовый прайс для ниши. Названия, цены и длительность меняются в настройках.</p>
       </section>
 
       {/* 03 КАБИНЕТ */}
@@ -227,32 +231,34 @@ export default function Landing() {
             <Check>Расход фразой: «взяла базы и топы на 3200»</Check>
             <Check>Клиентке пора на коррекцию — напоминание в Telegram или MAX</Check>
           </div>
-          <Link to="/demo" className="mb-lift self-start px-[26px] py-4 rounded-full bg-ink text-white font-extrabold text-[15px] no-underline hover:bg-black">Открыть демо-кабинет</Link>
+          <Link to="/register" className="mb-lift self-start px-[26px] py-4 rounded-full bg-ink text-white font-extrabold text-[15px] no-underline hover:bg-black">Создать страницу</Link>
         </div>
       </section>
 
-      {/* ПИЛОТ */}
+      {/* ПОЧЕМУ ЭТО РАБОТАЕТ */}
       <section className="max-w-[1200px] mx-auto px-4 sm:px-8 pt-24 sm:pt-32 flex flex-wrap gap-6 items-stretch">
-        {PILOT_QUOTE ? (
-          <div className="flex-[2_1_520px] min-w-0 border border-silver rounded-[30px] p-8 sm:p-10 flex flex-col gap-[22px]">
-            <svg width="44" height="34" viewBox="0 0 44 34" aria-hidden="true"><path d="M0 34V20C0 8 6 1 17 0l2 5c-6 2-9 6-9 11h8v18zm25 0V20c0-12 6-19 17-20l2 5c-6 2-9 6-9 11h8v18z" fill="#FFC531" /></svg>
-            <p className="m-0 text-xl sm:text-[26px] leading-snug font-semibold tracking-[-0.01em]">{PILOT_QUOTE.text}</p>
-            <div><div className="font-extrabold">{PILOT_QUOTE.author}</div><div className="text-[13px] text-muted">{PILOT_QUOTE.role}</div></div>
+        <div className="flex-[2_1_520px] min-w-0 border border-silver rounded-[30px] p-8 sm:p-10 flex flex-col justify-between gap-7">
+          <div>
+            <div className="text-xs font-bold uppercase tracking-[0.14em] text-graphite">Почему это работает</div>
+            <p className="m-0 mt-3 text-xl sm:text-[26px] leading-snug font-semibold tracking-[-0.01em]">Вы не меняете привычный блокнот — просто подтверждаете записи в телефоне. Остальное система делает сама.</p>
           </div>
-        ) : (
-          <div className="flex-[2_1_520px] min-w-0 border border-silver rounded-[30px] p-8 sm:p-10 flex flex-col justify-between gap-6">
-            <p className="m-0 text-xl sm:text-[26px] leading-snug font-semibold tracking-[-0.01em]">Посмотрите, как это выглядит для клиента: выберите услугу и время — заявка придёт в демо-кабинет.</p>
-            <Link to="/c/demo" className="mb-lift self-start inline-flex items-center gap-2 px-6 py-4 rounded-full border border-ink text-ink font-extrabold no-underline hover:bg-ink hover:text-white">
-              Записаться как клиент <Icon name="arrow" size={18} stroke={2.2} />
-            </Link>
+          <div className="flex flex-col gap-3.5">
+            <Check>Клиент записывается сам и видит только свободные окна</Check>
+            <Check>Напоминание за час до визита уходит автоматически</Check>
+            <Check>Доход после визита попадает в кассу</Check>
           </div>
-        )}
+        </div>
         <div className="flex-[1_1_300px] min-w-0 bg-sun rounded-none p-8 sm:p-10 flex flex-col justify-between gap-6">
           <div className="text-sm font-extrabold uppercase tracking-[0.06em]">Пилот</div>
           {pilot && pilot.bookings_via_link > 0 ? (
             <div>
               <div className="font-display font-bold text-[54px] leading-none">{num(pilot.bookings_via_link)}</div>
               <div className="text-base font-semibold mt-1.5">записей через ссылки мастеров</div>
+            </div>
+          ) : pilot && pilot.masters > 0 ? (
+            <div>
+              <div className="font-display font-bold text-[54px] leading-none">{num(pilot.masters)}</div>
+              <div className="text-base font-semibold mt-1.5">мастер{pilot.masters === 1 ? '' : 'ов'} уже на сервисе</div>
             </div>
           ) : (
             <div>
@@ -312,7 +318,7 @@ export default function Landing() {
               {NICHES.map(n => <option key={n} value={n}>{n}</option>)}
             </select>
           </label>
-          <button type="submit" className="self-start mt-2 px-7 py-[17px] rounded-full bg-sun text-ink font-extrabold text-base hover:bg-[#F5B800]">Продолжить</button>
+          <button type="submit" className="self-start mt-2 px-7 py-[17px] rounded-full bg-sun text-ink font-extrabold text-base hover:bg-[#F5B800]">Создать страницу</button>
         </form>
         <div className="flex-[1_1_380px] min-w-0 relative min-h-[360px] flex items-center">
           <Blob className="inset-0 right-[-120px]" />
@@ -326,8 +332,8 @@ export default function Landing() {
               </>
             ) : (
               <>
-                <div className="text-[15px] text-onink leading-relaxed">Самый быстрый ответ — открыть демо-кабинет и всё понажимать.</div>
-                <Link to="/demo" className="self-start text-[15px] font-bold text-sun underline underline-offset-4">Открыть демо</Link>
+                <div className="text-[15px] text-onink leading-relaxed">Начните с бесплатной страницы — всё остальное подключите позже.</div>
+                <Link to="/register" className="self-start text-[15px] font-bold text-sun underline underline-offset-4">Создать страницу</Link>
               </>
             )}
           </div>
@@ -341,9 +347,8 @@ export default function Landing() {
           <span className="text-[13px] text-muted">Онлайн-запись и касса для частных мастеров</span>
         </div>
         <div className="flex gap-14 flex-wrap text-sm">
-          <div className="flex flex-col gap-2.5"><span className="font-extrabold">Продукт</span><a href="#how" className="text-body no-underline hover:text-ink">Как это работает</a><a href="#pricing" className="text-body no-underline hover:text-ink">Тарифы</a><Link to="/demo" className="text-body no-underline hover:text-ink">Демо-кабинет</Link></div>
+          <div className="flex flex-col gap-2.5"><span className="font-extrabold">Продукт</span><a href="#how" className="text-body no-underline hover:text-ink">Как это работает</a><a href="#audience" className="text-body no-underline hover:text-ink">Для кого</a><a href="#pricing" className="text-body no-underline hover:text-ink">Тарифы</a></div>
           <div className="flex flex-col gap-2.5"><span className="font-extrabold">Мастеру</span><Link to="/register" className="text-body no-underline hover:text-ink">Создать страницу</Link><Link to="/app" className="text-body no-underline hover:text-ink">Войти</Link></div>
-          <div className="flex flex-col gap-2.5"><span className="font-extrabold">Клиенту</span><Link to="/c/demo" className="text-body no-underline hover:text-ink">Пример записи</Link></div>
         </div>
       </footer>
     </div>
