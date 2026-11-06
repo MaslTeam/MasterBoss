@@ -1,0 +1,15 @@
+meta:
+  environment: docker
+  toolchain:
+    name: docker
+
+build:
+  dockerfile: Dockerfile
+
+run:
+  # Uvicorn слушает 8000 (см. Dockerfile). Без этой строки Amvera по умолчанию
+  # проксирует трафик на 80-й порт и сайт отдаёт 502.
+  containerPort: 8000
+  # Постоянное хранилище Amvera монтируется сюда. В /data лежит SQLite-база
+  # (DB_PATH=/data/masterboss.db), поэтому данные переживают пересборку.
+  persistenceMount: /data

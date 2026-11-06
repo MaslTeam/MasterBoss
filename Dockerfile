@@ -33,6 +33,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Московский часовой пояс для всего контейнера (слоты, напоминания, правило отмены за 24 ч)
 ENV TZ=Europe/Moscow
+# Логи (включая PIN первого мастера) должны появляться сразу, а не после заполнения буфера
+ENV PYTHONUNBUFFERED=1
 
 # Установка Python-библиотек
 COPY backend/requirements.txt ./
@@ -44,9 +46,10 @@ COPY backend/ ./backend/
 # Копирование собранного фронтенда
 COPY --from=frontend-builder /build/dist ./frontend/dist
 
-# Папка для сохранения базы данных SQLite (Volume)
-RUN mkdir -p /app/data
-ENV DB_PATH=/app/data/masterboss.db
+# Папка для сохранения базы данных SQLite.
+# /data — путь по умолчанию для постоянного хранилища Amvera и томов Docker.
+RUN mkdir -p /data
+ENV DB_PATH=/data/masterboss.db
 ENV FRONTEND_DIST=/app/frontend/dist
 ENV PORT=8000
 
@@ -54,5 +57,7 @@ WORKDIR /app/backend
 
 EXPOSE 8000
 
-# Запуск Uvicorn-сервера
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT}"]
+# Запуск Uvicorn-сервера.
+# На Amvera (AMVERA=1) всегда слушаем 8000 — этот же порт указан в amvera.yml
+# (run.containerPort). На Render/других PaaS используется их переменная PORT.
+CMD ["sh", "-c", "if [ \"$AMVERA\" = \"1\" ]; then PORT=8000; fi; exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]

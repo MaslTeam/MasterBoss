@@ -1,0 +1,27 @@
+# Git и IDE
+.git
+.gitignore
+.vscode
+.idea
+
+# Python
+**/__pycache__
+**/*.py[cod]
+.venv
+venv
+
+# Node.js: зависимости ставятся внутри образа, dist собирается в builder-стадии
+**/node_modules
+frontend/dist
+
+# Секреты и локальные данные не должны попадать в образ
+**/.env
+**/.env.*
+**/*.pem
+**/*.db
+**/*.sqlite3
+
+# Локальные скрипты и документация
+run_*.bat
+README*.md
+landing.html

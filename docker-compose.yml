@@ -12,15 +12,17 @@ services:
       - GIGACHAT_MODEL=${GIGACHAT_MODEL:-GigaChat-2}
       - GIGACHAT_SCOPE=${GIGACHAT_SCOPE:-GIGACHAT_API_PERS}
       - PUBLIC_URL=${PUBLIC_URL:-}
+      - SECRET_KEY=${SECRET_KEY:-}
+      - INITIAL_MASTER_PIN=${INITIAL_MASTER_PIN:-}
       - TZ=Europe/Moscow
       - VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY:-BDwLS9UhWmV794dMkB0ZJQ5_-tsz3eNLuCrNM4UHMh7XxDVq3v-2_8OxNYKcqa-MOqESfJGsK6A_r_PAp22p6q4}
       - VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY:-vapid_private.pem}
       - VAPID_EMAIL=${VAPID_EMAIL:-mailto:masterboss@example.com}
       - CORS_ORIGINS=${CORS_ORIGINS:-*}
-      - DB_PATH=/app/data/masterboss.db
+      - DB_PATH=/data/masterboss.db
       - FRONTEND_DIST=/app/frontend/dist
     volumes:
-      - masterboss_data:/app/data
+      - masterboss_data:/data
 
 volumes:
   masterboss_data:
