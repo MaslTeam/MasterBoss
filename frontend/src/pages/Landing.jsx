@@ -1,9 +1,8 @@
-import React, { useEffect, useState } from 'react'
+import React, { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Icon, Logo, Blob, Dot } from '../components/ui'
-import { API_BASE, getSession } from '../api'
+import { getSession } from '../api'
 import { NICHES } from '../utils/niches'
-import { num } from '../utils/format'
 
 // Контакт команды для блока «Остались вопросы?». Пусто — блок ведёт в регистрацию.
 const TEAM_CONTACT = '' // например 'https://t.me/masterboss_team'
@@ -37,24 +36,16 @@ const STEPS = [
 ]
 
 const PLANS = [
-  { name: 'Старт', price: '0 ₽', items: ['Страница записи', 'До 30 записей в месяц', 'Касса и напоминания'], cta: 'Создать страницу' },
-  { name: 'Мастер', price: '790 ₽', items: ['Без лимита записей', 'ИИ-помощник GigaChat', 'Аудит бизнеса за месяц'], cta: 'Создать страницу', featured: true },
-  { name: 'Студия', price: '1 490 ₽', items: ['До 3 мастеров', 'Общая касса', 'Приоритетная поддержка'], cta: 'Создать страницу' },
+  { name: 'Старт', price: '0 ₽', desc: 'До 30 заявок для лёгкого старта.' },
+  { name: 'Мастер', price: '790 ₽', desc: 'Безлимит записи с автовозвратом базы.', featured: true },
+  { name: 'Мастер+', price: '1490 ₽', desc: 'AI-аналитика финансов с листом ожидания.' },
 ]
 
 export default function Landing() {
   const navigate = useNavigate()
   const loggedIn = Boolean(getSession().token)
-  const [pilot, setPilot] = useState(null)
   const [quickName, setQuickName] = useState('')
   const [quickNiche, setQuickNiche] = useState(NICHES[0])
-
-  useEffect(() => {
-    fetch(`${API_BASE}/api/public/pilot-stats`)
-      .then(r => (r.ok ? r.json() : null))
-      .then(setPilot)
-      .catch(() => {})
-  }, [])
 
   const goRegister = (e) => {
     e.preventDefault()
@@ -236,8 +227,8 @@ export default function Landing() {
       </section>
 
       {/* ПОЧЕМУ ЭТО РАБОТАЕТ */}
-      <section className="max-w-[1200px] mx-auto px-4 sm:px-8 pt-24 sm:pt-32 flex flex-wrap gap-6 items-stretch">
-        <div className="flex-[2_1_520px] min-w-0 border border-silver rounded-[30px] p-8 sm:p-10 flex flex-col justify-between gap-7">
+      <section className="max-w-[1200px] mx-auto px-4 sm:px-8 pt-24 sm:pt-32">
+        <div className="border border-silver rounded-[30px] p-8 sm:p-10 grid gap-8 lg:grid-cols-[1.05fr_1fr] lg:items-center">
           <div>
             <div className="text-xs font-bold uppercase tracking-[0.14em] text-graphite">Почему это работает</div>
             <p className="m-0 mt-3 text-xl sm:text-[26px] leading-snug font-semibold tracking-[-0.01em]">Вы не меняете привычный блокнот — просто подтверждаете записи в телефоне. Остальное система делает сама.</p>
@@ -248,28 +239,6 @@ export default function Landing() {
             <Check>Доход после визита попадает в кассу</Check>
           </div>
         </div>
-        <div className="flex-[1_1_300px] min-w-0 bg-sun rounded-none p-8 sm:p-10 flex flex-col justify-between gap-6">
-          <div className="text-sm font-extrabold uppercase tracking-[0.06em]">Пилот</div>
-          {pilot && pilot.bookings_via_link > 0 ? (
-            <div>
-              <div className="font-display font-bold text-[54px] leading-none">{num(pilot.bookings_via_link)}</div>
-              <div className="text-base font-semibold mt-1.5">записей через ссылки мастеров</div>
-            </div>
-          ) : pilot && pilot.masters > 0 ? (
-            <div>
-              <div className="font-display font-bold text-[54px] leading-none">{num(pilot.masters)}</div>
-              <div className="text-base font-semibold mt-1.5">мастер{pilot.masters === 1 ? '' : 'ов'} уже на сервисе</div>
-            </div>
-          ) : (
-            <div>
-              <div className="font-display font-bold text-[34px] leading-tight">Идёт сейчас</div>
-              <div className="text-base font-semibold mt-1.5">Первые мастера принимают записи</div>
-            </div>
-          )}
-          <div className="text-[13px] text-[#4A3A00]">
-            {pilot && pilot.masters ? `Мастеров на сервисе: ${num(pilot.masters)}` : 'Цифры обновляются автоматически'}
-          </div>
-        </div>
       </section>
 
       {/* 04 ТАРИФЫ */}
@@ -278,19 +247,18 @@ export default function Landing() {
         <h2 className="m-0 mb-8 font-display font-bold text-[28px] sm:text-[42px] tracking-[-0.03em]">Тарифы</h2>
         <div className="grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] gap-4 items-stretch">
           {PLANS.map(plan => (
-            <div key={plan.name} className={`mb-card rounded-[30px] p-8 flex flex-col gap-5 relative ${plan.featured ? 'bg-ink text-white' : 'border border-silver'}`}>
-              {plan.featured && <span className="absolute top-7 right-7 px-3 py-1.5 rounded-full bg-sun text-ink text-xs font-extrabold">Популярный</span>}
-              <div className="font-extrabold text-lg">{plan.name}</div>
-              <div>
-                <span className={`font-display font-bold text-[44px] ${plan.featured ? 'text-sun' : ''}`}>{plan.price}</span>
-                <span className={plan.featured ? 'text-onink' : 'text-muted'}> / мес</span>
+            <div key={plan.name} className={`mb-card rounded-[26px] p-7 sm:p-8 flex flex-col gap-5 relative ${plan.featured ? 'bg-ink text-white' : 'border border-silver'}`}>
+              {plan.featured && <span className="absolute top-6 right-6 px-3 py-1.5 rounded-full bg-sun text-ink text-xs font-extrabold">Популярный</span>}
+              <div className="flex flex-wrap items-baseline gap-x-1.5 pr-24">
+                <span className="font-extrabold text-[19px]">{plan.name}</span>
+                <span className={`font-display font-bold text-[19px] ${plan.featured ? 'text-sun' : 'text-ink'}`}>· {plan.price}/мес</span>
               </div>
-              <div className="flex flex-col gap-2.5 text-[15px]">{plan.items.map(item => <span key={item}>{item}</span>)}</div>
+              <p className={`m-0 text-[15px] leading-relaxed ${plan.featured ? 'text-onink' : 'text-muted'}`}>{plan.desc}</p>
               <Link
                 to="/register"
-                className={`mb-lift mt-auto py-[15px] text-center rounded-full font-extrabold no-underline ${plan.featured ? 'bg-sun text-ink hover:bg-[#F5B800]' : 'border border-ink text-ink hover:bg-ink hover:text-white'}`}
+                className={`mb-lift mt-auto inline-flex items-center gap-2 self-start px-5 py-3 rounded-full font-extrabold text-sm no-underline ${plan.featured ? 'bg-sun text-ink hover:bg-[#F5B800]' : 'border border-ink text-ink hover:bg-ink hover:text-white'}`}
               >
-                {plan.cta}
+                Создать страницу <Icon name="arrow" size={16} stroke={2.2} />
               </Link>
             </div>
           ))}
